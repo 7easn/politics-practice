@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#183c73"><meta name="description" content="依据普心(3).docx整理的全文记忆练习。选择题仅用于记忆；北大347仍按简答与论述备考。">
+<title>普心记忆题库</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23183c73'/%3E%3Cpath d='M8 7v8q0 6 8 6t8-6V7M16 6v21' fill='none' stroke='white' stroke-width='2.5'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header><a class="brand" href="./" aria-label="普心记忆题库首页"><span class="mark">Ψ</span><span>普心记忆题库<small>把知识记清楚</small></span></a><div class="header-actions"><button id="notesBtn">原文与覆盖</button><button id="helpBtn" aria-label="题库使用说明">使用说明</button></div></header>
+<div class="exam-note"><span>记忆工具</span>选择题仅用于记忆。北大347备考仍以<strong>简答题、论述题</strong>为目标。</div>
+<div class="layout">
+<aside aria-label="章节目录"><div class="aside-title">学习目录 <span id="chapterCount">17章</span></div><button class="chapter active" data-chapter="0"><span>全部内容</span><small id="totalCount">正在读取</small></button><nav id="chapters"></nav><div class="aside-foot">来源：普心(3).docx<br>题目、解析与原文逐条关联</div></aside>
+<main>
+<section class="workspace-head"><div><p class="eyebrow">普通心理学 · 记忆练习</p><h1 id="chapterTitle">全部内容</h1></div><div class="stats"><div><b id="answeredCount">0</b><span>已练习</span></div><div><b id="wrongCount">0</b><span>待复习</span></div><div><b id="accuracy">—</b><span>首次正确率</span></div></div></section>
+<div class="mobile-chapters"><label for="chapterSelect">章节</label><select id="chapterSelect"><option value="0">全部内容</option></select></div>
+<div class="toolbar"><div class="tabs" role="group" aria-label="练习范围"><button data-mode="all" class="active">全部练习</button><button data-mode="unseen">未做题</button><button data-mode="wrong">错题本 <span id="wrongBadge">0</span></button><button data-mode="review">待核对</button></div><div class="practice-controls"><label class="sr-only" for="kindSelect">题目类型</label><select id="kindSelect"><option value="all">全部题型</option><option value="概念辨析">概念辨析</option><option value="关键词">关键词记忆</option><option value="表格辨析">表格辨析</option><option value="source">原文表述</option></select><label class="sr-only" for="orderSelect">题目顺序</label><select id="orderSelect"><option value="ordered">顺序练习</option><option value="random">随机练习</option></select></div></div>
+<div class="session-row"><span id="sessionInfo" aria-live="polite">正在加载全文题库…</span><button id="resumeBtn" hidden>继续上次</button><label class="jump">跳至 <input id="jumpInput" type="number" min="1" inputmode="numeric" aria-label="跳转到筛选范围内第几题"><button id="jumpBtn">确定</button></label></div>
+<progress id="sessionProgress" max="100" value="0" aria-label="本组进度"></progress>
+<article id="questionCard" class="question-card" aria-live="polite"><p>正在读取题库，请稍候。</p></article>
+<section id="feedback" class="feedback" hidden aria-live="polite"></section>
+<div class="bottom-actions"><button id="prevBtn" disabled>上一题</button><div><button id="flagBtn" disabled>加入错题本</button><button class="primary" id="submitBtn" disabled>提交答案</button><button class="primary" id="nextBtn" hidden>下一题</button></div></div>
+<p class="storage-note" id="storageNote">进度与错题保存在当前设备的浏览器中，不会自动跨设备同步。</p>
+<footer><span id="bankSummary"></span><button id="exportBtn">导出学习记录</button><label class="file-label" for="importFile">导入学习记录</label><input id="importFile" type="file" accept="application/json,.json" hidden></footer>
+</main></div>
+<dialog id="notesDialog"><div class="dialog-head"><h2>原文与覆盖</h2><button data-close="notesDialog" aria-label="关闭原文窗口">关闭</button></div><p class="dialog-intro">正文、表格与原文定位均保留。结构标题和口诀不单独充作知识题；有疑问或仅列标题的内容单列，不计成绩。</p><div class="notes-controls"><label for="sourceChapter">查看章节</label><select id="sourceChapter"></select></div><div id="coverageSummary" class="coverage-summary"></div><div id="sourceList"></div></dialog>
+<dialog id="helpDialog"><div class="dialog-head"><h2>怎样用这份题库</h2><button data-close="helpDialog">关闭</button></div><div class="help-body"><p><strong>选择题只帮助记忆，不是北大题型预测。</strong>做完后可以遮住选项，用自己的话说出定义、区别、机制和例子，再过渡到简答与论述。</p><ol><li>选择章节，按顺序练习；也可以随机抽练。</li><li>选答案后点“提交答案”，查看解析和对应原文。答错自动进入错题本。</li><li>错题答对不会自动删除；确认掌握后，点击“移出错题本”。</li><li>“待核对”保留原文存疑、版本差异和未展开的条目，不计成绩。原文不是官方答案。</li><li>错题和进度仅保存在本浏览器。换设备时，先导出记录，再到另一台设备导入。</li></ol><p>快捷键：1—4选答案，Enter提交或下一题。手机、iPad可直接点选。</p><p id="contentMethod"></p><h3>部分纠错参考</h3><div id="sourceLinks"></div><p>只对发现的问题作了纠错或标注，不代表原笔记所有表述均已经外部文献逐条审定。</p></div></dialog>
+<div id="toast" role="status" hidden></div>
+<script src="app.js" defer></script>
+</body></html>
