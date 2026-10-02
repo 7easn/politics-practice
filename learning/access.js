@@ -12,7 +12,7 @@ async function enter(status){
  el('loginPanel').hidden=true;el('ownerBar').hidden=false;el('privateApp').hidden=false;
  if(!mounted){el('privateApp').innerHTML=window.STUDY_SHELL;const shell=el('privateApp').querySelector('.shell');shell.append(el('managePanel'),el('notesPanel'));window.PrivateContentManager.initialize(api,()=>loggedIn);mounted=true}
  showPanel('study');
- if(!started){started=true;const script=document.createElement('script');script.src='learning/app.js';document.head.append(script)}
+ if(!started){started=true;const script=document.createElement('script');script.src='learning/app.js?v=20261002-read-v2';document.head.append(script)}
  else if(stamp===generation)await window.reloadPrivateStudy?.();
 }
 api.subscribe(s=>enter(s).catch(e=>{feedback(e.message)}));
@@ -34,8 +34,8 @@ function showNotes(){
 }
 el('noteSearch').oninput=showNotes;
 document.addEventListener('click',event=>{const b=event.target.closest('[data-open-note]');if(!b)return;showPanel('notes');el('noteSearch').value=b.dataset.openNote;el('loadNotes').click()});
-el('loadNotes').onclick=async()=>{const stamp=generation;try{const doc=await api.getPrivateContent('notes');if(stamp!==generation||!loggedIn)return;noteRecords=doc.records||[];showNotes()}catch(e){el('privateNotes').textContent=e.message}};
-el('loadDocuments').onclick=async()=>{const stamp=generation;try{const doc=await api.getPrivateContent('documents');if(stamp!==generation||!loggedIn)return;el('privateDocuments').replaceChildren();urls.forEach(URL.revokeObjectURL);urls=[];for(const d of doc.documents||[]){const bytes=Uint8Array.from(atob(d.base64),c=>c.charCodeAt(0)),url=URL.createObjectURL(new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'}));urls.push(url);const link=document.createElement('a');link.className='btn';link.href=url;link.download=d.file_name;link.textContent='下载 '+d.file_name;el('privateDocuments').append(link)}}catch(e){el('privateDocuments').textContent=e.message}};
+el('loadNotes').onclick=async()=>{const stamp=generation;try{const doc=await api.getPrivateContent('notes');if(stamp!==generation||!loggedIn)return;noteRecords=doc.records||[];showNotes()}catch(e){if(stamp===generation&&loggedIn)el('privateNotes').textContent=e.message}};
+el('loadDocuments').onclick=async()=>{const stamp=generation;try{const doc=await api.getPrivateContent('documents');if(stamp!==generation||!loggedIn)return;el('privateDocuments').replaceChildren();urls.forEach(URL.revokeObjectURL);urls=[];for(const d of doc.documents||[]){const bytes=Uint8Array.from(atob(d.base64),c=>c.charCodeAt(0)),url=URL.createObjectURL(new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'}));urls.push(url);const link=document.createElement('a');link.className='btn';link.href=url;link.download=d.file_name;link.textContent='下载 '+d.file_name;el('privateDocuments').append(link)}}catch(e){if(stamp===generation&&loggedIn)el('privateDocuments').textContent=e.message}};
 setInterval(()=>{if(loggedIn)api.checkAccess()},60000);
 window.addEventListener('focus',()=>{if(loggedIn)api.checkAccess()});
 window.addEventListener('pagehide',()=>{urls.forEach(URL.revokeObjectURL)});

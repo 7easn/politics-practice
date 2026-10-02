@@ -4,10 +4,10 @@
 const types=[{key:'psychology',label:'心理学题库',file:'psychology.json',description:'选择题、主观候选题、解析、来源及覆盖台账。'},
  {key:'notes',label:'笔记原文索引',file:'notes.json',description:'8876条原文与稳定段落定位。原笔记可能有错，须结合修正阅读。'},
  {key:'documents',label:'原始Word',file:'documents.json',description:'8份原始Word的私有文件包。不要在这里选择单个.docx。'}];
-const entries=new Map();let api=null,authorized=()=>false,epoch=0;
+const entries=new Map();let api=null,authorized=()=>false,epoch=0,reading=false;
 const el=id=>document.getElementById(id),nodes=key=>({file:el('contentFile-'+key),choose:el('chooseContent-'+key),upload:el('uploadContent-'+key),name:el('contentName-'+key),meta:el('contentMeta-'+key),status:el('contentStatus-'+key)});
 function status(key,state,text){const n=nodes(key);n.status.dataset.state=state;n.status.textContent=text;}
-function overview(){const uploading=[...entries.values()].some(x=>x.uploading),saved=types.filter(t=>entries.get(t.key)?.saved).length;el('refreshPrivate').disabled=uploading||saved!==3;el('importOverview').textContent=uploading?'正在等待服务端确认，请保持页面打开。':`本次已确认导入 ${saved}/3 类文件。`;}
+function overview(){const uploading=[...entries.values()].some(x=>x.uploading),saved=types.filter(t=>entries.get(t.key)?.saved).length;el('refreshPrivate').disabled=uploading||reading||saved!==3;el('importOverview').textContent=uploading?'正在等待服务端确认，请保持页面打开。':reading?'正在加载已导入内容…':`本次已确认导入 ${saved}/3 类文件。`+(saved===3?' 点击“加载已导入内容”即可开始学习，无需整页刷新。':'');}
 function detect(p){if(p?.format&&['psychology-learning-record','psychology-combined-study-record','puxin-study-record'].includes(p.format))return 'record';if(Array.isArray(p?.memoryQuestions)&&Array.isArray(p?.predictions))return 'psychology';if(Array.isArray(p?.records))return 'notes';if(Array.isArray(p?.documents))return 'documents';return 'unknown';}
 function validate(key,p){
  const found=detect(p);if(found==='record')throw Error('这是学习记录备份，请到顶部“我的账号”→“备份与恢复”导入。');
@@ -59,8 +59,8 @@ function initialize(sync,check){api=sync;authorized=check;const host=el('content
   const info=document.createElement('p');info.id='contentStatus-'+t.key;info.className='import-status';info.setAttribute('role','status');info.setAttribute('aria-live','polite');info.textContent='尚未选择文件。';
   card.append(heading,description,name,meta,picker,actions,info);host.append(card);
  }
- el('refreshPrivate').onclick=()=>{if(![...entries.values()].some(x=>x.uploading))location.reload()};overview();
+ el('refreshPrivate').onclick=async()=>{if(reading||!authorized()||types.some(t=>!entries.get(t.key)?.saved)||[...entries.values()].some(x=>x.uploading))return;const stamp=epoch;reading=true;overview();try{if(!window.reloadPrivateStudy)throw Error('学习界面尚未准备好，请稍后重试。');const loaded=await window.reloadPrivateStudy();if(stamp!==epoch||!authorized())return;if(loaded===false)throw Error('题库读取未完成，请到学习页查看诊断并重试。');window.showPrivatePanel?.('study')}catch(error){if(stamp===epoch)el('importOverview').textContent=error.message}finally{if(stamp===epoch){reading=false;el('refreshPrivate').disabled=false}}};overview();
 }
-function reset(){epoch++;entries.clear();for(const t of types){const n=nodes(t.key);if(!n.file)continue;n.file.value='';n.upload.disabled=true;n.upload.textContent='导入'+t.label;n.choose.disabled=false;n.name.textContent='尚未选择文件';n.meta.textContent='';status(t.key,'','尚未选择文件。');}overview();}
+function reset(){epoch++;reading=false;entries.clear();for(const t of types){const n=nodes(t.key);if(!n.file)continue;n.file.value='';n.upload.disabled=true;n.upload.textContent='导入'+t.label;n.choose.disabled=false;n.name.textContent='尚未选择文件';n.meta.textContent='';status(t.key,'','尚未选择文件。');}overview();}
 window.PrivateContentManager={initialize,reset};
 })();

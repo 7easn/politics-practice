@@ -19,22 +19,20 @@
   }
   function normalize(s){return {access_token:s.access_token,refresh_token:s.refresh_token,
     expires_at:s.expires_at||Math.floor(Date.now()/1000)+(s.expires_in||3600),user:{id:s.user.id,email:s.user.email||''}}}
-  async function request(path,body,authenticated=false){
+  async function request(path,body,authenticated=false,logoutSession=null){
     const requestEpoch=epoch;
     if(!config)throw Error('尚未配置同步项目。');
-    if(authenticated)await ensureSession();
+    if(authenticated&&!logoutSession)await ensureSession();
     const headers={'apikey':config.publishableKey,'Content-Type':'application/json'};
-    if(authenticated)headers.Authorization='Bearer '+session.access_token;
-    let response;
-    try{response=await fetch(config.url+path,{method:'POST',headers,body:JSON.stringify(body),cache:'no-store',signal:controller.signal})}
-    catch{throw Error('网络不可用，本机未同步操作已保留。')}
-    if(requestEpoch!==epoch)throw Error('账户会话已切换，此回复不会应用到新账户。');
-    let result;try{result=await response.json()}catch{result={}}
+    if(authenticated)headers.Authorization='Bearer '+(logoutSession||session).access_token;
+    let response,result,timedOut=false;const local=new AbortController(),globalSignal=controller.signal,abort=()=>local.abort();globalSignal.addEventListener('abort',abort,{once:true});if(globalSignal.aborted)local.abort();const timer=setTimeout(()=>{timedOut=true;local.abort()},30000);
+    try{response=await fetch(config.url+path,{method:'POST',headers,body:JSON.stringify(body),cache:'no-store',signal:local.signal});try{result=await response.json()}catch(error){if(local.signal.aborted)throw error;result={}}}
+    catch{const error=Error(timedOut?'请求等待超过30秒，请重试；本机学习记录仍保留。':'网络不可用，本机未同步操作已保留。');error.code=timedOut?'REQUEST_TIMEOUT':'NETWORK_UNAVAILABLE';throw error}finally{clearTimeout(timer);globalSignal.removeEventListener('abort',abort)}
     if(requestEpoch!==epoch)throw Error('账户会话已切换，此回复不会应用到新账户。');
     if(!response.ok){
       if(result.code==='P0002'){const error=Error('本人私有内容尚未导入，请在左侧题库与资料管理中导入交付文件。');error.code='P0002';error.status=response.status;throw error;}
       if(response.status===429)throw Error('邮件或请求额度已达上限，请稍后重试；不会自动升级收费。');
-      if([401,403].includes(response.status))throw Error('会话或学习数据权限未通过服务端验证，请检查登录与允许名单。');
+      if([401,403].includes(response.status)){const error=Error('会话或学习数据权限未通过服务端验证，请检查登录与允许名单。');error.status=response.status;error.code=String(result.code||'AUTH_REJECTED');throw error;}
       const code=String(result.code||result.error_code||'UNKNOWN').replace(/[^A-Za-z0-9_]/g,'').slice(0,32);
       const hints={PGRST202:'服务端未识别这个RPC签名或缓存尚未更新。',57014:'数据库请求超时。',54000:'数据库请求超过执行限制。',53200:'数据库内存不足。',42501:'服务端权限检查拒绝。'};
       const hint=response.status===413?'请求文件超过服务端大小限制。':hints[code]||'服务端拒绝此操作。';
@@ -58,7 +56,7 @@
   const persistBox=()=>write(boxKey(),box);
   async function readRemote(){
     const result=await request('/rest/v1/rpc/get_study_state',{},true);
-    if(result.user_id!==session.user.id||!Number.isSafeInteger(result.revision))throw Error('服务端身份或状态校验失败。');
+    if(result.user_id!==session.user.id||!Number.isSafeInteger(result.revision)){const error=Error('服务端身份或状态校验失败。');error.code='IDENTITY_MISMATCH';throw error;}
     return result;
   }
   async function acquireWriter(){
@@ -190,10 +188,10 @@
     publish({message:'登录邮件已请求；请在发起请求的同一浏览器打开官方链接。'});
   }
   async function signOut(){
-    epoch++;controller.abort();controller=new AbortController();activeSync=null;
-    if(session){try{await request('/auth/v1/logout?scope=local',{},true)}catch{/* local token cleared even offline */}localStorage.removeItem(sessionKey())}
-    if(releaseWriter)releaseWriter();
-    session=null;box=null;publish({authenticated:false,readOnly:false,user_id:null,email:null,pending:0,conflict:false,message:'已退出 · 离线记录按账户隔离保留在本机'});
+    const previousSession=session;epoch++;controller.abort();controller=new AbortController();activeSync=null;
+    if(previousSession)localStorage.removeItem(sessionKey());if(releaseWriter)releaseWriter();
+    session=null;box=null;publish({authenticated:false,readOnly:false,user_id:null,email:null,pending:0,conflict:false,accessWarning:null,message:'已退出 · 离线记录按账户隔离保留在本机'});
+    if(previousSession)try{await request('/auth/v1/logout?scope=local',{},true,previousSession)}catch{/* local content and token already cleared */}
   }
   async function signInPassword(email,password){
     await initialize();
@@ -211,17 +209,31 @@
     while(start<text.length){let end=Math.min(start+100000,text.length);if(end<text.length&&text.charCodeAt(end-1)>=0xd800&&text.charCodeAt(end-1)<=0xdbff)end--;chunks.push(text.slice(start,end));start=end;}
     return chunks;
   }
-  async function getPrivateContent(key){
+  function validateManifest(manifest,key){
+    if(!manifest||!Number.isInteger(manifest.chunk_count)||manifest.chunk_count<1||manifest.chunk_count>512||!Number.isInteger(manifest.byte_count)||manifest.byte_count<2||manifest.byte_count>33554432||!/^[a-f0-9]{64}$/.test(manifest.sha256)||typeof manifest.upload_id!=='string'||(manifest.document_key&&manifest.document_key!==key))throw Error('服务端内容清单无效。');return manifest;
+  }
+  async function getPrivateContentManifest(key){await initialize();if(!status.authenticated)throw Error('请先登录并通过本人允许名单。');if(!contentKeys.includes(key))throw Error('不支持的内容类型。');return validateManifest(await request('/rest/v1/rpc/study_get_content_manifest',{p_key:key},true),key)}
+  async function getPrivateContent(key,onProgress=()=>{}){
+    const readEpoch=epoch;
     await initialize();
     if(!status.authenticated)throw Error('请先登录并通过本人允许名单。');
+    const progress=value=>{if(readEpoch!==epoch)throw Error('账户会话已切换，此内容不会应用到新账户。');onProgress(value)};
+    progress({phase:'manifest',received:0,total:0});
     let manifest;
     try{manifest=await request('/rest/v1/rpc/study_get_content_manifest',{p_key:key},true)}
-    catch(error){if(['P0002','PGRST202'].includes(error.code))return request('/rest/v1/rpc/study_get_private_content',{p_key:key},true);throw error}
-    if(!Number.isInteger(manifest.chunk_count)||manifest.chunk_count<1||manifest.chunk_count>512||manifest.byte_count>33554432)throw Error('服务端内容清单无效。');
-    const chunks=[];
-    for(let i=0;i<manifest.chunk_count;i++){const part=await request('/rest/v1/rpc/study_get_content_chunk',{p_upload:manifest.upload_id,p_index:i},true);if(part.chunk_index!==i||typeof part.content!=='string')throw Error('服务端内容分片无效。');chunks.push(part.content)}
+    catch(error){if(['P0002','PGRST202'].includes(error.code)){progress({phase:'legacy',received:0,total:0});const value=await request('/rest/v1/rpc/study_get_private_content',{p_key:key},true);progress({phase:'complete',received:1,total:1});return value}throw error}
+    validateManifest(manifest,key);
+    const chunks=new Array(manifest.chunk_count);let next=0,received=0,failure=null;
+    progress({phase:'download',received,total:manifest.chunk_count,bytes:manifest.byte_count});
+    async function worker(){while(!failure&&next<manifest.chunk_count){const i=next++;try{
+      const part=await request('/rest/v1/rpc/study_get_content_chunk',{p_upload:manifest.upload_id,p_index:i},true);
+      if(part.chunk_index!==i||typeof part.content!=='string')throw Error('服务端内容分片无效。');
+      chunks[i]=part.content;received++;progress({phase:'download',received,total:manifest.chunk_count,bytes:manifest.byte_count});
+    }catch(error){failure=failure||error}}}
+    await Promise.all(Array.from({length:Math.min(4,manifest.chunk_count)},worker));if(failure)throw failure;
+    progress({phase:'verify',received,total:manifest.chunk_count,bytes:manifest.byte_count});
     const text=chunks.join('');if(new TextEncoder().encode(text).byteLength!==manifest.byte_count||await contentHash(text)!==manifest.sha256)throw Error('服务端内容校验失败，请重新读取。');
-    return JSON.parse(text);
+    const value=JSON.parse(text);progress({phase:'complete',received,total:manifest.chunk_count,bytes:manifest.byte_count,manifest});return value;
   }
   async function setPrivateContent(key,payload,onProgress=()=>{}){
     await initialize();
@@ -245,7 +257,7 @@
   }
   async function checkAccess(){
     await initialize();if(!status.authenticated)return false;
-    try{await readRemote();return true}catch{await signOut();return false}
+    try{await readRemote();publish({accessWarning:null});return true}catch(error){if([401,403].includes(error.status)||['42501','AUTH_REJECTED','IDENTITY_MISMATCH'].includes(error.code)){await signOut();return false}publish({accessWarning:'权限检查暂未完成：'+error.message+' 下次联网后重试；此状态不代表已验证。'});return false}
   }
   async function selfCheck(){
     await initialize();if(!config)throw Error('项目尚未配置。');
@@ -268,7 +280,7 @@
     }else checks.push({check:'本人账户服务端读取',passed:false,detail:'请先由本人在此浏览器登录；本检查不发送邮件'});
     return checks;
   }
-  window.PsychSync={configure,signIn,signInPassword,signOut,sync,stageLocal,resolveConflict,getPrivateContent,setPrivateContent,checkAccess,
+  window.PsychSync={configure,signIn,signInPassword,signOut,sync,stageLocal,resolveConflict,getPrivateContent,getPrivateContentManifest,setPrivateContent,checkAccess,
     selfCheck,
     async getStatus(){await initialize();return {...status}},
     async getAccountState(){await initialize();return box?clone(box.pending.length?box.localSeen:box.remote):null},

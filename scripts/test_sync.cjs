@@ -12,9 +12,9 @@ function harness({loggedIn=true,locks=true,persistedStorage=null,serverState=nul
     if(path.includes('?select=user_id&limit=0'))return {ok:false,status:401,json:async()=>({code:'42501'})};
     if(path.includes('/auth/v1/settings'))return {ok:true,status:200,json:async()=>({disable_signup:true})};
     const body=JSON.parse(opts.body);calls.push({path,body});
-    if(state.offline)throw Error('fixture offline');
+    if(state.offline)throw Error('fixture offline');if(state.denyAccess&&path.includes('get_study_state'))return {ok:false,status:403,json:async()=>({code:'42501'})};
     if(path.includes('/otp'))return {ok:true,json:async()=>({})};
-    if(path.includes('/logout'))return {ok:true,json:async()=>({})};
+    if(path.includes('/logout')){if(state.holdLogout)await new Promise(r=>state.releaseLogout=r);return {ok:true,json:async()=>({})};}
     if(path.includes('study_begin_content_upload'))return state.privateError?
       {ok:false,status:state.privateError.status,json:async()=>({code:state.privateError.code})}:
       {ok:true,status:200,json:async()=>({upload_id:'fixture-upload',received:[],complete:false})};
@@ -36,11 +36,13 @@ function harness({loggedIn=true,locks=true,persistedStorage=null,serverState=nul
   };
   const window={},context={window,fetch,localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},
     navigator:locks?{locks:{request:async(name,options,cb)=>typeof options==='function'?options():cb({name})}}:{},
-    crypto:webcrypto,TextEncoder,Uint8Array,URL,AbortController,Date,JSON,Set,Map,Promise,Number,Error,
+    crypto:webcrypto,TextEncoder,Uint8Array,URL,AbortController,setTimeout,clearTimeout,Date,JSON,Set,Map,Promise,Number,Error,
     btoa:s=>Buffer.from(s,'binary').toString('base64'),location:{href:'https://example.invalid/learning/',hash:''},history:{replaceState(){}}};
   vm.runInNewContext(source,context);return {api:window.PsychSync,state,storage,calls};
 }
 (async()=>{
+  const exiting=harness();await exiting.api.getStatus();exiting.state.holdLogout=true;const logout=exiting.api.signOut();assert.equal((await exiting.api.getStatus()).authenticated,false,'logout waited for network to clear account');exiting.state.releaseLogout();await logout;
+  const access=harness();await access.api.getStatus();access.state.offline=true;assert.equal(await access.api.checkAccess(),false);assert.equal((await access.api.getStatus()).authenticated,true,'offline check signed user out');assert((await access.api.getStatus()).accessWarning);access.state.offline=false;assert.equal(await access.api.checkAccess(),true);assert.equal((await access.api.getStatus()).accessWarning,null);access.state.denyAccess=true;assert.equal(await access.api.checkAccess(),false);assert.equal((await access.api.getStatus()).authenticated,false,'denied access retained session');
   // Closing during the one-second debounce must retain operations and timestamps.
   let staged=harness();await staged.api.getStatus();
   const beforeClose={answers:{early:{correct:true,selected:[1],attempts:1,time:'client-time'}},wrong:[],favorites:['early']};

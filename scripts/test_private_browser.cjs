@@ -6,7 +6,7 @@ const fixture={version:'fixture',build:'synthetic local test',subjects:[{id:'pux
 (async()=>{
 const browser=await chromium.launch({headless:true,...(process.env.CHROME_BINARY?{executablePath:process.env.CHROME_BINARY}:{})});
 try{
- const context=await browser.newContext({viewport:{width:1440,height:1000}}),calls=[],errors=[];let allowed=true,failedOnce=false,conflictNext=false,failSyncNext=false;const uploads=new Map();
+ const context=await browser.newContext({viewport:{width:1440,height:1000}}),calls=[],errors=[];let allowed=true,failedOnce=false,conflictNext=false,failSyncNext=false,failInitialRead=true;const uploads=new Map();
  await context.route('**/*',async route=>{
   const url=new URL(route.request().url());if(url.origin===new URL(base).origin)return route.continue();
   if(url.origin!=='https://fdpofmiuprjtvjbtnrku.supabase.co')return route.abort();
@@ -18,7 +18,7 @@ try{
   else if(url.pathname.endsWith('study_begin_content_upload')){const b=route.request().postDataJSON();const id=b.p_key+'-'+b.p_sha256;let upload=uploads.get(id);if(!upload){upload={key:b.p_key,hash:b.p_sha256,received:new Set()};uploads.set(id,upload)}body={upload_id:id,received:[...upload.received],complete:false};}
   else if(url.pathname.endsWith('study_put_content_chunk')){const b=route.request().postDataJSON(),u=uploads.get(b.p_upload);if(u.key==='psychology'&&b.p_index===1&&!failedOnce){failedOnce=true;status=500;body={code:'57014',message:'synthetic interrupted upload'};}else{u.received.add(b.p_index);body={received:true,chunk_index:b.p_index};await new Promise(r=>setTimeout(r,30));}}
   else if(url.pathname.endsWith('study_commit_content_upload')){const b=route.request().postDataJSON(),u=uploads.get(b.p_upload);body={saved:true,document_key:u.key,sha256:u.hash};}
-  else if(url.pathname.endsWith('study_get_private_content')){body=allowed?fixture:{code:'42501'};status=allowed?200:403;}
+  else if(url.pathname.endsWith('study_get_private_content')){await new Promise(r=>setTimeout(r,350));if(failInitialRead){failInitialRead=false;body={code:'57014'};status=500}else{body=allowed?fixture:{code:'42501'};status=allowed?200:403;}}
   else if(url.pathname.includes('/logout'))body={};
   else if(url.pathname.endsWith('submit_study_batch')){const b=route.request().postDataJSON();if(failSyncNext){body={message:'synthetic sync failed'};status=500;failSyncNext=false;}else{body={status:conflictNext?'conflict':'ok',revision:1,state:{answers:{},wrong:[],favorites:[]},accepted:conflictNext?[]:b.operations.map(o=>o.id)};conflictNext=false;}}
   else throw Error('Unexpected fixture request '+url.pathname);
@@ -28,7 +28,7 @@ try{
  await page.waitForSelector('#privateLogin');assert.equal(await page.locator('#emailLogin,#loginPanel h1').count(),0);assert.equal(await page.locator('#accessMessage').isVisible(),false);assert.equal(await page.locator('#ownerBar').isVisible(),false);
  assert.equal(calls.filter(x=>x.path.endsWith('study_get_private_content')).length,0,'anonymous fetched content');
  await page.locator('#ownerEmail').fill('fixture@example.invalid');await page.locator('#ownerPassword').fill('fixture-password-not-a-credential');await page.locator('#passwordLogin').click();
- await page.waitForSelector('[data-view="memory"]');await page.locator('[data-view="memory"]').click();await page.waitForSelector('[data-choice]');
+ await page.waitForSelector('#privateReadStatus button');assert((await page.locator('#privateReadStatus').innerText()).includes('57014'));await page.locator('#privateReadStatus button').click();await page.waitForFunction(()=>document.getElementById('privateReadStatus').hidden);assert(calls.filter(c=>/study_get_(private_content|content_manifest)$/.test(c.path)).every(c=>c.body.p_key==='psychology'),'initial load fetched notes or Word');await page.locator('[data-view="memory"]').click();await page.waitForSelector('[data-choice]');
  await page.locator('[data-choice="fixture-Q"][data-index="1"]').click();await page.locator('[data-submit="fixture-Q"]').click();
  assert.equal(await page.locator('text=逐项解释').count(),1);
  const stored=await page.evaluate(()=>Object.fromEntries(Object.entries(localStorage)));
@@ -57,7 +57,7 @@ try{
   await page.waitForFunction(k=>document.getElementById('contentStatus-'+k).dataset.state==='ready',key);assert.equal(importCalls(),count);
   await page.locator('#uploadContent-'+key).click();await page.waitForFunction(k=>document.getElementById('contentStatus-'+k).dataset.state==='success',key);
  }
- assert.equal(await page.locator('#refreshPrivate').isDisabled(),false);
+ assert.equal(await page.locator('#refreshPrivate').isDisabled(),false);const beforeRefresh=calls.filter(c=>c.path.endsWith('study_get_private_content')).length;const pageURL=page.url();await page.locator('#refreshPrivate').click();await page.waitForFunction(()=>document.getElementById('managePanel').hidden);assert.equal(page.url(),pageURL,'import reload navigated page');assert.equal(calls.filter(c=>c.path.endsWith('study_get_private_content')).length,beforeRefresh+1);await page.locator('#openManager').click();assert.equal(await page.locator('.import-card').count(),3);assert.equal(await page.locator('#contentStatus-notes').getAttribute('data-state'),'success');
  await page.screenshot({path:path.join(out,'private-manager-desktop.png'),fullPage:true});
  await page.setViewportSize({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);await page.screenshot({path:path.join(out,'private-manager-mobile.png'),fullPage:false});
  await page.locator('#openNotes').click();assert.equal(await page.locator('#notesPanel').isVisible(),true);assert.equal(await page.locator('#managePanel').isVisible(),false);

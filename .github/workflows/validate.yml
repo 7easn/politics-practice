@@ -22,3 +22,4 @@ jobs:
           node --check learning/manager.js
           node scripts/test_sync.cjs
           node scripts/test_content_chunks.cjs
+          node scripts/test_answer_display.cjs
