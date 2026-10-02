@@ -3,9 +3,9 @@ const vm=require('node:vm'),fs=require('node:fs'),assert=require('node:assert/st
 const {webcrypto}=require('node:crypto');
 const source=fs.readFileSync(require('node:path').join(__dirname,'../learning/sync.js'),'utf8');
 const EMPTY=()=>({answers:{},wrong:[],favorites:[]});
-function harness({loggedIn=true,locks=true}={}){
-  const url='https://fixture-project.supabase.co',storage=new Map(),calls=[];
-  const state={revision:0,state:EMPTY(),ids:new Set(),offline:false,loseReply:false,hold:false,held:null};
+function harness({loggedIn=true,locks=true,persistedStorage=null,serverState=null}={}){
+  const url='https://fixture-project.supabase.co',storage=persistedStorage||new Map(),calls=[];
+  const state=serverState||{revision:0,state:EMPTY(),ids:new Set(),offline:false,loseReply:false,hold:false,held:null};
   storage.set('psychology-sync-config-v1',JSON.stringify({url,publishableKey:'sb_publishable_fixture'}));
   if(loggedIn)storage.set('psychology-sync-session-v1:'+url,JSON.stringify({access_token:'local-test-placeholder',refresh_token:'local-test-placeholder',expires_at:Date.now()/1000+3600,user:{id:'fixture-user',email:'fixture@example.invalid'}}));
   const fetch=async(path,opts)=>{
@@ -15,6 +15,9 @@ function harness({loggedIn=true,locks=true}={}){
     if(state.offline)throw Error('fixture offline');
     if(path.includes('/otp'))return {ok:true,json:async()=>({})};
     if(path.includes('/logout'))return {ok:true,json:async()=>({})};
+    if(path.includes('study_set_private_content'))return state.privateError?
+      {ok:false,status:state.privateError.status,json:async()=>({code:state.privateError.code})}:
+      {ok:true,status:200,json:async()=>({saved:true,document_key:body.p_key})};
     if(path.includes('get_study_state'))return {ok:true,json:async()=>({user_id:'fixture-user',revision:state.revision,state:structuredClone(state.state)})};
     if(path.includes('submit_study_batch')){
       if(state.hold)await new Promise(r=>state.held=r);
@@ -38,7 +41,25 @@ function harness({loggedIn=true,locks=true}={}){
   vm.runInNewContext(source,context);return {api:window.PsychSync,state,storage,calls};
 }
 (async()=>{
+  // Closing during the one-second debounce must retain operations and timestamps.
+  let staged=harness();await staged.api.getStatus();
+  const beforeClose={answers:{early:{correct:true,selected:[1],attempts:1,time:'client-time'}},wrong:[],favorites:['early']};
+  staged.api.stageLocal(beforeClose);
+  assert.equal(staged.calls.filter(c=>c.path.includes('submit_study_batch')).length,0);
+  assert.equal((await staged.api.getStatus()).pending,2);
+  staged=harness({persistedStorage:staged.storage,serverState:staged.state});
+  await staged.api.getStatus();const recovered=await staged.api.getAccountState();
+  assert.equal(recovered.answers.early.time,'client-time');
+  const completed=await staged.api.sync(recovered);assert.equal(completed.answers.early.attempts,1);
+  // A stale client timestamp after a concurrent reply must not add an attempt.
+  await staged.api.sync({...completed,answers:{early:{...completed.answers.early,time:'older-client-time'}},favorites:[]});
+  assert.equal(staged.state.state.answers.early.attempts,1);
   let t=harness();assert.equal((await t.api.getStatus()).authenticated,true);
+  for(const failure of [{status:500,code:'57014'},{status:404,code:'PGRST202'},{status:413,code:undefined}]){
+    t.state.privateError=failure;
+    await assert.rejects(t.api.setPrivateContent('psychology',{}),error=>error.status===failure.status&&error.message.includes('HTTP '+failure.status)&&!error.message.includes('local-test-placeholder'));
+  }
+  t.state.privateError=null;
   await assert.rejects(t.api.configure({url:'http://bad.invalid',publishableKey:'service_role'}));
   let local={answers:{Q:{correct:true,selected:[1],attempts:1,time:'local-time'}},wrong:[],favorites:['Q'],notes:{secretDraft:'must remain local'}};
   t.state.offline=true;await assert.rejects(t.api.sync(local));

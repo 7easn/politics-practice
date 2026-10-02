@@ -35,7 +35,11 @@
       if(result.code==='P0002')throw Error('本人私有内容尚未导入，请在登录后的内容管理中导入交付文件。');
       if(response.status===429)throw Error('邮件或请求额度已达上限，请稍后重试；不会自动升级收费。');
       if([401,403].includes(response.status))throw Error('会话或学习数据权限未通过服务端验证，请检查登录与允许名单。');
-      throw Error('服务端拒绝此操作，请检查项目配置、允许名单和数据库脚本。');
+      const code=String(result.code||result.error_code||'UNKNOWN').replace(/[^A-Za-z0-9_]/g,'').slice(0,32);
+      const hints={PGRST202:'服务端未识别这个RPC签名或缓存尚未更新。',57014:'数据库请求超时。',54000:'数据库请求超过执行限制。',53200:'数据库内存不足。',42501:'服务端权限检查拒绝。'};
+      const hint=response.status===413?'请求文件超过服务端大小限制。':hints[code]||'服务端拒绝此操作。';
+      const error=Error(hint+' 诊断：HTTP '+response.status+' / '+code+'。请只提供这两个诊断值，不要发送密码或令牌。');
+      error.status=response.status;error.code=code;throw error;
     }
     return result;
   }
@@ -81,9 +85,11 @@
     for(const [id,a] of Object.entries(next.answers)){
       if(!a||typeof a.correct!=='boolean'||!Number.isInteger(a.attempts)||a.attempts<1)continue;
       const old=previous.answers[id];
-      if(old&&a.time===old.time&&a.attempts===old.attempts)continue;
+      // A server timestamp rebase is not another attempt. Count actual attempts
+      // and answer changes, including when another local save raced a reply.
+      if(old&&a.attempts<=old.attempts&&a.correct===old.correct&&JSON.stringify(a.selected||[])===JSON.stringify(old.selected||[]))continue;
       // Import an existing aggregate once. Normal newly submitted attempts use a single event.
-      const kind=a.attempts>(old?.attempts||0)+1?'import_answer':'answer';
+      const kind=a.attempts===(old?.attempts||0)+1?'answer':'import_answer';
       queue(kind,id,{correct:a.correct,selected:a.selected||[],...(kind==='import_answer'?{attempts:a.attempts}:{})});
     }
     for(const [field,kind] of [['wrong','wrong'],['favorites','favorite']]){
@@ -92,6 +98,12 @@
       for(const id of before)if(!after.has(id))queue(kind,id,{value:false});
     }
     box.localSeen=clone(next);persistBox();
+  }
+  function stageLocal(state){
+    if(!status.authenticated||!box)throw Error('请先完成真实登录和服务端允许名单设置。');
+    if(status.readOnly)throw Error('当前窗口仅查看，不能修改离线队列。');
+    capture(state);
+    publish({pending:box.pending.length,message:box.pending.length?'已保存至本机 · 待同步 '+box.pending.length+' 项':status.message});
   }
   function localProjection(remote,operations){
     const value=clone(remote);
@@ -106,7 +118,7 @@
   async function sync(state){
     await initialize();if(!status.authenticated||!box)throw Error('请先完成真实登录和服务端允许名单设置。');
     if(status.readOnly)throw Error('当前窗口仅查看，不能覆盖另一个窗口的离线队列。');
-    capture(state);
+    stageLocal(state);
     if(activeSync)return activeSync;
     const syncEpoch=epoch;
     activeSync=(async()=>{
@@ -228,9 +240,9 @@
     }else checks.push({check:'本人账户服务端读取',passed:false,detail:'请先由本人在此浏览器登录；本检查不发送邮件'});
     return checks;
   }
-  window.PsychSync={configure,signIn,signInPassword,signOut,sync,resolveConflict,getPrivateContent,setPrivateContent,checkAccess,
+  window.PsychSync={configure,signIn,signInPassword,signOut,sync,stageLocal,resolveConflict,getPrivateContent,setPrivateContent,checkAccess,
     selfCheck,
     async getStatus(){await initialize();return {...status}},
-    async getAccountState(){await initialize();return box?localProjection(box.remote,box.pending):null},
+    async getAccountState(){await initialize();return box?clone(box.pending.length?box.localSeen:box.remote):null},
     subscribe(callback){subscribers.add(callback);callback({...status});return()=>subscribers.delete(callback)}};
 })();
