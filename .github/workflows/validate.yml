@@ -23,3 +23,4 @@ jobs:
           node scripts/test_sync.cjs
           node scripts/test_content_chunks.cjs
           node scripts/test_answer_display.cjs
+          node scripts/test_source_display.cjs

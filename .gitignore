@@ -12,3 +12,4 @@ scripts/validate_extraction.py
 scripts/validate_prediction_evidence.py
 scripts/test_ui.cjs
 scripts/test_browser.cjs
+/scripts/compose_mnemonics.py

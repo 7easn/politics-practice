@@ -12,7 +12,7 @@ async function enter(status){
  el('loginPanel').hidden=true;el('ownerBar').hidden=false;el('privateApp').hidden=false;
  if(!mounted){el('privateApp').innerHTML=window.STUDY_SHELL;const shell=el('privateApp').querySelector('.shell');shell.append(el('managePanel'),el('notesPanel'));window.PrivateContentManager.initialize(api,()=>loggedIn);mounted=true}
  showPanel('study');
- if(!started){started=true;const script=document.createElement('script');script.src='learning/app.js?v=20261002-read-v3';document.head.append(script)}
+ if(!started){started=true;const script=document.createElement('script');script.src='learning/app.js?v=20261002-mnemonic-v1';document.head.append(script)}
  else if(stamp===generation)await window.reloadPrivateStudy?.();
 }
 api.subscribe(s=>enter(s).catch(e=>{feedback(e.message)}));
