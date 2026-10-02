@@ -10,23 +10,39 @@ async function enter(status){
  if(loggedIn&&currentUser===status.user_id)return;
  loggedIn=true;currentUser=status.user_id;const stamp=++generation;
  el('loginPanel').hidden=true;el('ownerBar').hidden=false;el('privateApp').hidden=false;
- if(!mounted){el('privateApp').innerHTML=window.STUDY_SHELL;const shell=el('privateApp').querySelector('.shell');shell.append(el('managePanel'),el('notesPanel'));window.PrivateContentManager.initialize(api,()=>loggedIn);mounted=true}
- showPanel('study');
- if(!started){started=true;const script=document.createElement('script');script.src='learning/app.js?v=20261002-cache-v1';document.head.append(script)}
+ if(!mounted){el('privateApp').innerHTML=window.STUDY_SHELL;const shell=el('privateApp').querySelector('.shell');shell.append(el('managePanel'));el('managerNotesSection').append(el('notesPanel'));window.PrivateContentManager.initialize(api,()=>loggedIn);mounted=true}
+ restoreRoute();
+ if(!started){started=true;const script=document.createElement('script');script.src='learning/app.js?v=20261002-management-v2';document.head.append(script)}
  else if(stamp===generation)await window.reloadPrivateStudy?.();
 }
 api.subscribe(s=>enter(s).catch(e=>{feedback(e.message)}));
 api.getStatus();
 el('privateLogin').onsubmit=async event=>{event.preventDefault();const button=el('passwordLogin');button.disabled=true;const password=el('ownerPassword').value;el('ownerPassword').value='';try{await api.signInPassword(el('ownerEmail').value.trim(),password)}catch(e){feedback(e.message)}finally{button.disabled=false}};
 el('logoutOwner').onclick=()=>api.signOut();
-function showPanel(panel){
- if(!loggedIn)return;el('privateApp').hidden=false;el('studyMain').hidden=panel!=='study';el('managePanel').hidden=panel!=='manage';el('notesPanel').hidden=panel!=='notes';
- document.querySelectorAll('[data-panel]').forEach(b=>b.classList.toggle('active',b.dataset.panel===panel));
- if(panel!=='study')document.querySelectorAll('[data-view]').forEach(b=>b.classList.remove('active'));
+function showPanel(panel,section='bank',updateRoute=true){
+ if(!loggedIn)return;
+ if(['notes','corrections','sources'].includes(panel)){section=panel;panel='manage'}
+ if(!['bank','notes','corrections','sources'].includes(section))section='bank';
+ const managed=panel==='manage',studySection=managed&&['corrections','sources'].includes(section);
+ el('privateApp').hidden=false;el('managePanel').hidden=!managed;
+ const main=el('studyMain'),home=el('privateApp').querySelector('.shell');
+ (studySection?el('managerStudySection'):home).append(main);main.hidden=managed&&!studySection;
+ const readStatus=el('privateReadStatus');if(readStatus){if(managed&&section==='bank')el('managerVersionSection').append(readStatus);else el('content').before(readStatus)}
+ el('managerBankSection').hidden=!managed||section!=='bank';
+ el('managerNotesSection').hidden=!managed||section!=='notes';
+ el('notesPanel').hidden=!managed||section!=='notes';el('managerStudySection').hidden=!studySection;
+ document.querySelectorAll('[data-management-section]').forEach(b=>{const active=managed&&b.dataset.managementSection===section;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active))});
+ document.querySelectorAll('[data-panel]').forEach(b=>b.classList.toggle('active',managed&&b.dataset.panel==='manage'));
+ if(managed){document.querySelectorAll('nav[aria-label="学习导航"] [data-view]').forEach(b=>b.classList.remove('active'));if(studySection)window.showStudyView?.(section)}
+ if(updateRoute){const hash=managed?'manage'+(section==='bank'?'':'/'+section):location.hash.slice(1);if(managed&&location.hash!=='#'+hash)location.hash=hash;else if(!managed&&/^(manage(?:\/|$)|notes$|corrections$|sources$)/.test(hash)){location.hash='trend';window.showStudyView?.('trend')}}
 }
 window.showPrivatePanel=showPanel;
-document.addEventListener('click',event=>{const panel=event.target.closest('[data-panel]');if(panel)showPanel(panel.dataset.panel);if(event.target.closest('[data-view]'))showPanel('study');});
-el('accountBackup').onclick=()=>{showPanel('study');window.showStudyView?.('sync');el('accountMenu').open=false};
+function restoreRoute(){const hash=location.hash.slice(1);if(hash==='manage'||hash.startsWith('manage/'))showPanel('manage',hash.split('/')[1]||'bank',false);else if(['notes','corrections','sources'].includes(hash))showPanel('manage',hash,false);else{showPanel('study','bank',false);window.showStudyView?.(hash||'trend')}}
+window.restorePrivateRoute=restoreRoute;
+window.openContentManager=section=>showPanel('manage',section||'bank');
+window.addEventListener('hashchange',restoreRoute);
+document.addEventListener('click',event=>{const section=event.target.closest('[data-management-section]');if(section)showPanel('manage',section.dataset.managementSection);const panel=event.target.closest('[data-panel]');if(panel)showPanel(panel.dataset.panel);if(event.target.closest('[data-view]'))showPanel('study');});
+el('accountBackup').onclick=()=>{showPanel('study');location.hash='sync';window.showStudyView?.('sync');el('accountMenu').open=false};
 function showNotes(){
  const search=el('noteSearch').value.trim().toLowerCase();const filtered=noteRecords.filter(r=>JSON.stringify(r).toLowerCase().includes(search));el('privateNotes').replaceChildren();
  const count=document.createElement('p');count.textContent=`匹配 ${filtered.length} 条；每次展示前100条，请用文件名或段落ID缩小范围。`;el('privateNotes').append(count);

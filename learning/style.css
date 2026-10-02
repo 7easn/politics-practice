@@ -13,3 +13,5 @@ aside,main,.card,.annual>div,.option{min-width:0}.option{overflow-wrap:anywhere}
 
 /* V12 answer main text only: keep category boundaries and explicit line breaks. */
 .answer-point-text{white-space:pre-wrap;overflow-wrap:anywhere}
+
+.management-nav{display:flex;flex-wrap:wrap;gap:10px;margin:20px 0}.management-nav .active{background:var(--ink,#193b35);color:white}.version-hint{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:14px;padding:8px 0}.version-hint .btn{padding:6px 10px}#managerNotesSection #notesPanel{padding:0;max-width:none}#managerStudySection #studyMain{padding:0;max-width:none}#managerStudySection #metrics,#managerStudySection #studyMain>section.notice,#managerStudySection #studyMain>footer{display:none}#managerStudySection #studyMain>header h1{font-size:26px}#managePanel [hidden]{display:none!important}@media(max-width:600px){.management-nav{gap:8px}.management-nav .btn{flex:1 1 calc(50% - 8px);white-space:normal}#managerStudySection #studyMain,#managerNotesSection #notesPanel{padding:0}}
