@@ -277,7 +277,7 @@
     await initialize();
     if(!status.authenticated)throw Error('请先登录并通过本人允许名单。');
     if(!contentKeys.includes(key))throw Error('不支持的内容类型。');
-    const owner=cacheOwner(),validatePayload=options.validatePayload,cacheEnabled=typeof validatePayload==='function';
+    const owner=cacheOwner(),validatePayload=options.validatePayload,cacheEnabled=typeof validatePayload==='function'&&options.cacheMode!=='bypass';
     const guard=()=>{if(readEpoch!==epoch||owner!==cacheOwner()||!status.authenticated)throw Error('账户会话已切换，此内容不会应用到新账户。')};
     // A valid token alone is insufficient: require the allowlist/identity RPC.
     try{await readRemote()}catch(error){if(error.code==='IDENTITY_MISMATCH')await dropSession('服务端账户身份不匹配 · 私有内容已隐藏');throw error}
@@ -333,6 +333,45 @@
     if(result.saved!==true||result.document_key!==key||result.sha256!==hash)throw Error('服务端未确认完整内容版本。');
     return result;
   }
+
+  async function updateSubjectiveContent(transport,onProgress=()=>{},options={}){
+    await initialize();const stamp=epoch,owner=cacheOwner();
+    const guard=()=>{if(stamp!==epoch||owner!==cacheOwner()||!status.authenticated||status.readOnly)throw Error('账户已切换或不可写，更新取消。')};guard();
+    if(typeof options.validatePayload!=='function'||!window.SubjectiveOnlyMerge)throw Error('缺少完整内容校验器或主观更新组件。');
+    SubjectiveOnlyMerge.validateTransport(transport);
+    let baselineManifest=null;
+    const base=await getPrivateContent('psychology',p=>{guard();if(p.phase==='complete')baselineManifest=p.manifest;onProgress({...p,phase:'baseline'})},{cacheMode:'bypass',preferLatest:true});guard();
+    if(!baselineManifest)throw Error('当前账户缺少分片基线清单；请先导入完整题库，不能用主观文件替代。');
+    await options.validatePayload(base);guard();
+    const transportSHA=await contentHash(JSON.stringify(transport));
+    if(base.subjectiveUpdate?.transport_sha256===transportSHA&&base.subjectiveUpdate?.native_sha256===transport.native_sha256){guard();return {saved:true,document_key:'psychology',sha256:baselineManifest.sha256,already_active:true,currentLearningVersionUnchanged:true,manualReloadRequired:true};}
+    const payload=SubjectiveOnlyMerge.merge(base,transport,baselineManifest.sha256,transportSHA);await options.validatePayload(payload);guard();
+    const text=JSON.stringify(payload),bytes=new TextEncoder().encode(text).byteLength;
+    if(bytes>33554432)throw Error('合并后超过32 MB，保留当前版本；请取得不改变既有选择题的适配包。');
+    const hash=await contentHash(text),chunks=contentChunks(text);
+    let upload=await request('/rest/v1/rpc/study_begin_content_upload',{p_key:'psychology',p_sha256:hash,p_bytes:bytes,p_chunks:chunks.length},true);guard();
+    const manifest={document_key:'psychology',upload_id:upload.upload_id,sha256:hash,byte_count:bytes,chunk_count:chunks.length};
+    // Stage only entries. Quota/IDB failure aborts BEFORE server activation and leaves selected version unchanged.
+    await cacheTransaction(owner,'readwrite',(tx,set)=>{guard();tx.objectStore('entries').put({id:cacheIdentity('psychology',hash),owner,key:'psychology',sha256:hash,version:payload.version,manifest:clone(manifest),text,verified_at:Date.now()});set(true)});guard();
+    let committed=false;
+    try{
+      const received=new Set(upload.received||[]);for(let i=0;i<chunks.length;i++){if(received.has(i)||upload.complete)continue;guard();const reply=await request('/rest/v1/rpc/study_put_content_chunk',{p_upload:upload.upload_id,p_index:i,p_text:chunks[i]},true);guard();if(reply.received!==true||reply.chunk_index!==i)throw Error('分片未确认');received.add(i);onProgress({phase:'upload',received:received.size,total:chunks.length})}
+      onProgress({phase:'commit',received:chunks.length,total:chunks.length});
+      let result;
+      try{result=await request('/rest/v1/rpc/study_commit_subjective_upload',{p_upload:upload.upload_id,p_expected_sha256:baselineManifest.sha256},true)}catch(error){
+        guard();if(error.code==='PGRST202')throw Error('主观原子更新SQL尚未安装；未调用旧提交接口。');
+        // Response loss is not proof of rollback; inspect authoritative active manifest.
+        if(error.code==='40001'||error.code==='22023'||error.status===401||error.status===403)throw error;
+        let active;try{active=await getPrivateContentManifest('psychology')}catch{const e=Error('提交结果尚未确认；当前学习版本保留，请联网后核对更新状态。');e.commitUncertain=true;throw e}
+        if(active.sha256!==hash)throw error;result={saved:true,sha256:hash,document_key:'psychology',updated_at:active.updated_at};
+      }
+      guard();if(result.saved!==true||result.sha256!==hash||result.document_key!=='psychology')throw Error('服务端未确认目标版本');committed=true;manifest.updated_at=result.updated_at;
+      let cacheStored=false;try{cacheStored=await cachePut(owner,'psychology',manifest,text,payload,stamp)}catch{}guard();
+      onProgress({phase:'complete',received:chunks.length,total:chunks.length,manifest,cacheStored,cacheHit:false});
+      return {...result,cacheStored,currentLearningVersionUnchanged:true,requiresManualReload:true,baseline_sha256:baselineManifest.sha256};
+    }catch(error){if(!committed&&!error.commitUncertain&&stamp===epoch&&owner===cacheOwner())try{await cacheForget(owner,'psychology',hash)}catch{}throw error}
+  }
+
   async function checkAccess(){
     await initialize();if(!status.authenticated)return false;
     try{await readRemote();publish({accessWarning:null});return true}catch(error){if([401,403].includes(error.status)||['42501','AUTH_REJECTED','IDENTITY_MISMATCH'].includes(error.code)){await signOut();return false}publish({accessWarning:'权限检查暂未完成：'+error.message+' 下次联网后重试；此状态不代表已验证。'});return false}
@@ -358,7 +397,7 @@
     }else checks.push({check:'本人账户服务端读取',passed:false,detail:'请先由本人在此浏览器登录；本检查不发送邮件'});
     return checks;
   }
-  window.PsychSync={configure,signIn,signInPassword,signOut,sync,stageLocal,resolveConflict,getPrivateContent,getPrivateContentManifest,setPrivateContent,checkAccess,
+  window.PsychSync={configure,signIn,signInPassword,signOut,sync,stageLocal,resolveConflict,getPrivateContent,getPrivateContentManifest,setPrivateContent,updateSubjectiveContent,checkAccess,
     selfCheck,
     async getStatus(){await initialize();return {...status}},
     async getAccountState(){await initialize();return box?clone(box.pending.length?box.localSeen:box.remote):null},
