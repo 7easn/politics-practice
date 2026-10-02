@@ -6,11 +6,17 @@ on:
 permissions:
   contents: read
 jobs:
-  privacy:
+  privacy-and-client:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Validate public tree
         run: python3 scripts/validate_public_tree.py
+      - name: Check client and account isolation
+        run: |
+          node --check learning/app.js
+          node --check learning/access.js
+          node --check learning/sync.js
+          node scripts/test_sync.cjs

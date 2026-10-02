@@ -2,3 +2,13 @@ private/
 backend/allowlist-kiky.sql
 __pycache__/
 .DS_Store
+# Local content authoring and source audits are private workbench material.
+docs/
+scripts/compose_content.py
+scripts/extract_materials.py
+scripts/build_coverage_inventory.py
+scripts/validate_content.py
+scripts/validate_extraction.py
+scripts/validate_prediction_evidence.py
+scripts/test_ui.cjs
+scripts/test_browser.cjs
