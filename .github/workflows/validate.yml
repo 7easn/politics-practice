@@ -1,0 +1,16 @@
+name: Validate private learning shell
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  privacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate public tree
+        run: python3 scripts/validate_public_tree.py

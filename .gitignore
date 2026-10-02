@@ -1,0 +1,4 @@
+private/
+backend/allowlist-kiky.sql
+__pycache__/
+.DS_Store
