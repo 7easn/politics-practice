@@ -32,7 +32,7 @@
     if(!response.ok){
       if(result.code==='P0002'){const error=Error('本人私有内容尚未导入，请在左侧题库与资料管理中导入交付文件。');error.code='P0002';error.status=response.status;throw error;}
       if(response.status===429)throw Error('邮件或请求额度已达上限，请稍后重试；不会自动升级收费。');
-      if([401,403].includes(response.status)){const error=Error('会话或学习数据权限未通过服务端验证，请检查登录与允许名单。');error.status=response.status;error.code=String(result.code||'AUTH_REJECTED');throw error;}
+      if([401,403].includes(response.status)||result.code==='42501'){if((authenticated||path.includes('grant_type=refresh_token'))&&!logoutSession)await dropSession('会话或允许名单已被服务端拒绝 · 私有内容已隐藏');const error=Error('会话或学习数据权限未通过服务端验证，请检查登录与允许名单。');error.status=response.status;error.code=String(result.code||'AUTH_REJECTED');throw error;}
       const code=String(result.code||result.error_code||'UNKNOWN').replace(/[^A-Za-z0-9_]/g,'').slice(0,32);
       const hints={PGRST202:'服务端未识别这个RPC签名或缓存尚未更新。',57014:'数据库请求超时。',54000:'数据库请求超过执行限制。',53200:'数据库内存不足。',42501:'服务端权限检查拒绝。'};
       const hint=response.status===413?'请求文件超过服务端大小限制。':hints[code]||'服务端拒绝此操作。';
@@ -44,9 +44,11 @@
   async function ensureSession(){
     if(!session?.refresh_token)throw Error('请先通过邮箱链接登录。');
     const refresh=async()=>{
-      const latest=read(sessionKey(),session);if(latest?.refresh_token)session=latest;
+      const latest=read(sessionKey(),session);if(latest?.user?.id!==session.user.id){const error=Error('本机账户会话已切换。');error.code='IDENTITY_MISMATCH';throw error}if(latest?.refresh_token)session=latest;
       if(session.expires_at>Date.now()/1000+90)return;
+      const refreshUserId=session.user.id;
       const next=await request('/auth/v1/token?grant_type=refresh_token',{refresh_token:session.refresh_token});
+      if(next.user?.id&&next.user.id!==refreshUserId){const error=Error('刷新回复的账户身份不匹配，原账户私有内容已隐藏。');error.code='IDENTITY_MISMATCH';await dropSession(error.message);throw error}
       if(!next.access_token||!next.user?.id)throw Error('登录会话已失效，请重新登录。');
       session=normalize(next);write(sessionKey(),session);
     };
@@ -166,7 +168,7 @@
         history.replaceState(null,'',url.pathname+url.search);publish({message:'邀请确认已返回；请从本浏览器主动请求登录链接。'});return;
       }
       if(session)await activate();
-    })().catch(error=>{publish({authenticated:false,message:error.message});});return ready;
+    })().catch(async error=>{if(error.code==='IDENTITY_MISMATCH')await dropSession(error.message);publish({authenticated:false,message:error.message});});return ready;
   }
   async function configure(c){
     const next=validateConfig(c);if(config&&next.url!==config.url&&status.authenticated)await signOut();
@@ -188,9 +190,7 @@
     publish({message:'登录邮件已请求；请在发起请求的同一浏览器打开官方链接。'});
   }
   async function signOut(){
-    const previousSession=session;epoch++;controller.abort();controller=new AbortController();activeSync=null;
-    if(previousSession)localStorage.removeItem(sessionKey());if(releaseWriter)releaseWriter();
-    session=null;box=null;publish({authenticated:false,readOnly:false,user_id:null,email:null,pending:0,conflict:false,accessWarning:null,message:'已退出 · 离线记录按账户隔离保留在本机'});
+    const previousSession=session;await dropSession();
     if(previousSession)try{await request('/auth/v1/logout?scope=local',{},true,previousSession)}catch{/* local content and token already cleared */}
   }
   async function signInPassword(email,password){
@@ -199,9 +199,68 @@
     const response=await request('/auth/v1/token?grant_type=password',{email,password});
     password='';
     if(!response.access_token||!response.user?.id)throw Error('登录回复无效。');
+    if(session&&session.user.id!==response.user.id)await signOut();
     session=normalize(response);write(sessionKey(),session);
     try{await activate()}catch(error){await signOut();throw error}
   }
+  // Private IndexedDB only: no service worker, Cache API, bank localStorage, or tokens.
+  const CACHE_SCHEMA=1,CACHE_PREFIX='psychology-private-content-v1:';
+  const cacheOwner=()=>session?.user?.id&&config?JSON.stringify([config.url,session.user.id]):null;
+  const cacheIdentity=(key,sha)=>JSON.stringify([key,sha]);
+  function cacheDatabase(owner){return new Promise((resolve,reject)=>{
+    if(!owner||!window.indexedDB){reject(Error('私有缓存不可用'));return}
+    let done=false;const finish=(error,db)=>{if(done){db?.close();return}done=true;clearTimeout(timer);error?reject(error):resolve(db)};
+    const timer=setTimeout(()=>finish(Error('私有缓存打开超时')),2500);
+    let req;try{req=window.indexedDB.open(CACHE_PREFIX+owner,CACHE_SCHEMA)}catch(error){finish(error);return}
+    req.onupgradeneeded=()=>{const db=req.result;if(!db.objectStoreNames.contains('entries'))db.createObjectStore('entries',{keyPath:'id'});if(!db.objectStoreNames.contains('selected'))db.createObjectStore('selected',{keyPath:'key'})};
+    req.onerror=()=>finish(req.error||Error('私有缓存打开失败'));req.onblocked=()=>finish(Error('私有缓存升级被其他窗口阻塞'));
+    req.onsuccess=()=>{req.result.onversionchange=()=>req.result.close();finish(null,req.result)};
+  })}
+  async function cacheTransaction(owner,mode,operate,signal=controller.signal){
+    const db=await cacheDatabase(owner);return new Promise((resolve,reject)=>{
+      let tx,value,done=false;const close=error=>{if(done)return;done=true;clearTimeout(timer);signal?.removeEventListener('abort',abort);db.close();error?reject(error):resolve(value)};
+      const abort=()=>{try{tx?.abort()}catch{}close(Error('私有缓存操作已取消'))};
+      const timer=setTimeout(()=>{try{tx?.abort()}catch{}close(Error('私有缓存操作超时'))},2500);
+      if(signal?.aborted){abort();return}
+      try{tx=db.transaction(['entries','selected'],mode);tx.oncomplete=()=>close();tx.onabort=()=>close(tx.error||Error('私有缓存事务未完成'));tx.onerror=()=>{};signal?.addEventListener('abort',abort,{once:true});operate(tx,x=>{value=x})}catch(error){try{tx?.abort()}catch{}close(error)}
+    });
+  }
+  async function cacheGet(owner,key,manifest,preferLatest){return cacheTransaction(owner,'readonly',(tx,set)=>{
+    const entries=tx.objectStore('entries');
+    const get=sha=>{const req=entries.get(cacheIdentity(key,sha));req.onsuccess=()=>set(req.result||null)};
+    if(preferLatest)get(manifest.sha256);else{const req=tx.objectStore('selected').get(key);req.onsuccess=()=>get(req.result?.sha256||manifest.sha256)}
+  })}
+  async function cacheForget(owner,key,sha){return cacheTransaction(owner,'readwrite',tx=>{
+    tx.objectStore('entries').delete(cacheIdentity(key,sha));const selected=tx.objectStore('selected'),req=selected.get(key);req.onsuccess=()=>{if(req.result?.sha256===sha)selected.delete(key)}
+  })}
+  async function cachePut(owner,key,manifest,text,value,readEpoch){
+    if(readEpoch!==epoch||owner!==cacheOwner())return false;
+    const signal=controller.signal;
+    return cacheTransaction(owner,'readwrite',(tx,set)=>{
+      if(readEpoch!==epoch||owner!==cacheOwner()){tx.abort();return}
+      tx.objectStore('entries').put({id:cacheIdentity(key,manifest.sha256),owner,key,sha256:manifest.sha256,version:typeof value.version==='string'?value.version:null,manifest:clone(manifest),text,verified_at:Date.now()});
+      tx.objectStore('selected').put({key,sha256:manifest.sha256});set(true);
+    },signal);
+  }
+  async function cachePurge(owner){
+    if(!owner||!window.indexedDB)return true;
+    // Abort old local transactions first. All connections are short lived, so
+    // deleteDatabase also waits for another tab's active transaction to drain.
+    return new Promise(resolve=>{let done=false;const finish=ok=>{if(!done){done=true;clearTimeout(timer);resolve(ok)}};const timer=setTimeout(()=>finish(false),2500);try{const req=window.indexedDB.deleteDatabase(CACHE_PREFIX+owner);req.onsuccess=()=>finish(true);req.onerror=()=>finish(false);req.onblocked=()=>{/* wait for versionchange/short-lived connections */}}catch{finish(false)}});
+  }
+  async function dropSession(message='已退出 · 离线记录按账户隔离保留在本机'){
+    const owner=cacheOwner();epoch++;controller.abort();controller=new AbortController();activeSync=null;
+    if(session&&config)localStorage.removeItem(sessionKey());if(releaseWriter)releaseWriter();
+    session=null;box=null;publish({authenticated:false,readOnly:false,user_id:null,email:null,pending:0,conflict:false,accessWarning:null,message});
+    const cleared=await cachePurge(owner);if(!cleared)publish({cacheCleanupWarning:'题库缓存清理未获浏览器确认，请关闭其他学习窗口后清除此站点的存储；学习记录未删除。'});
+  }
+  window.addEventListener?.('storage',event=>{
+    if(config&&session&&event.key===sessionKey()){
+      let next;try{next=event.newValue?JSON.parse(event.newValue):null}catch{next=null}
+      if(!next||next.user?.id!==session.user.id)dropSession('另一窗口已退出或切换账户 · 本窗口私有内容已隐藏').catch(()=>{});
+    }
+  });
+
   const contentKeys=['psychology','politics','english','notes','documents'];
   const contentHash=async text=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text)))).map(n=>n.toString(16).padStart(2,'0')).join('');
   function contentChunks(text){
@@ -213,16 +272,33 @@
     if(!manifest||!Number.isInteger(manifest.chunk_count)||manifest.chunk_count<1||manifest.chunk_count>512||!Number.isInteger(manifest.byte_count)||manifest.byte_count<2||manifest.byte_count>33554432||!/^[a-f0-9]{64}$/.test(manifest.sha256)||typeof manifest.upload_id!=='string'||(manifest.document_key&&manifest.document_key!==key))throw Error('服务端内容清单无效。');return manifest;
   }
   async function getPrivateContentManifest(key){await initialize();if(!status.authenticated)throw Error('请先登录并通过本人允许名单。');if(!contentKeys.includes(key))throw Error('不支持的内容类型。');return validateManifest(await request('/rest/v1/rpc/study_get_content_manifest',{p_key:key},true),key)}
-  async function getPrivateContent(key,onProgress=()=>{}){
+  async function getPrivateContent(key,onProgress=()=>{},options={}){
     const readEpoch=epoch;
     await initialize();
     if(!status.authenticated)throw Error('请先登录并通过本人允许名单。');
+    if(!contentKeys.includes(key))throw Error('不支持的内容类型。');
+    const owner=cacheOwner(),validatePayload=options.validatePayload,cacheEnabled=typeof validatePayload==='function';
+    const guard=()=>{if(readEpoch!==epoch||owner!==cacheOwner()||!status.authenticated)throw Error('账户会话已切换，此内容不会应用到新账户。')};
+    // A valid token alone is insufficient: require the allowlist/identity RPC.
+    try{await readRemote()}catch(error){if(error.code==='IDENTITY_MISMATCH')await dropSession('服务端账户身份不匹配 · 私有内容已隐藏');throw error}
+    guard();
     const progress=value=>{if(readEpoch!==epoch)throw Error('账户会话已切换，此内容不会应用到新账户。');onProgress(value)};
     progress({phase:'manifest',received:0,total:0});
     let manifest;
     try{manifest=await request('/rest/v1/rpc/study_get_content_manifest',{p_key:key},true)}
-    catch(error){if(['P0002','PGRST202'].includes(error.code)){progress({phase:'legacy',received:0,total:0});const value=await request('/rest/v1/rpc/study_get_private_content',{p_key:key},true);progress({phase:'complete',received:1,total:1});return value}throw error}
-    validateManifest(manifest,key);
+    catch(error){if(['P0002','PGRST202'].includes(error.code)){progress({phase:'legacy',received:0,total:0});const value=await request('/rest/v1/rpc/study_get_private_content',{p_key:key},true);guard();if(cacheEnabled)await validatePayload(value);guard();progress({phase:'complete',received:1,total:1});return value}throw error}
+    validateManifest(manifest,key);guard();
+    if(cacheEnabled){
+      let cached=null;
+      try{cached=await cacheGet(owner,key,manifest,options.preferLatest===true);guard();if(cached){
+        validateManifest(cached.manifest,key);
+        if(cached.owner!==owner||cached.key!==key||cached.sha256!==cached.manifest.sha256||typeof cached.text!=='string'||new TextEncoder().encode(cached.text).byteLength!==cached.manifest.byte_count||await contentHash(cached.text)!==cached.sha256)throw Error('缓存校验失败');
+        const value=JSON.parse(cached.text);if((typeof value.version==='string'?value.version:null)!==cached.version)throw Error('缓存版本不匹配');await validatePayload(value);guard();
+        const updateAvailable=manifest.sha256!==cached.sha256;
+        progress({phase:'cache',received:0,total:0,manifest:cached.manifest,availableManifest:manifest,cacheHit:true,updateAvailable});
+        progress({phase:'complete',received:0,total:0,bytes:cached.manifest.byte_count,manifest:cached.manifest,availableManifest:manifest,cacheHit:true,updateAvailable});return value;
+      }}catch(error){guard();if(cached)try{await cacheForget(owner,key,cached.sha256)}catch{/* optional cache failure falls back to verified download */}}
+    }
     const chunks=new Array(manifest.chunk_count);let next=0,received=0,failure=null;
     progress({phase:'download',received,total:manifest.chunk_count,bytes:manifest.byte_count});
     async function worker(){while(!failure&&next<manifest.chunk_count){const i=next++;try{
@@ -233,7 +309,9 @@
     await Promise.all(Array.from({length:Math.min(4,manifest.chunk_count)},worker));if(failure)throw failure;
     progress({phase:'verify',received,total:manifest.chunk_count,bytes:manifest.byte_count});
     const text=chunks.join('');if(new TextEncoder().encode(text).byteLength!==manifest.byte_count||await contentHash(text)!==manifest.sha256)throw Error('服务端内容校验失败，请重新读取。');
-    const value=JSON.parse(text);progress({phase:'complete',received,total:manifest.chunk_count,bytes:manifest.byte_count,manifest});return value;
+    const value=JSON.parse(text);guard();if(cacheEnabled)await validatePayload(value);guard();
+    let cacheStored=false;if(cacheEnabled)try{cacheStored=await cachePut(owner,key,manifest,text,value,readEpoch)}catch{/* quota/disabled storage never makes a verified download fail */}
+    guard();progress({phase:'complete',received,total:manifest.chunk_count,bytes:manifest.byte_count,manifest,cacheHit:false,cacheStored});return value;
   }
   async function setPrivateContent(key,payload,onProgress=()=>{}){
     await initialize();
