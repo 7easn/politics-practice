@@ -1,0 +1,66 @@
+/* Three explicit content imports. File selection never sends a network request. */
+(() => {
+'use strict';
+const types=[{key:'psychology',label:'心理学题库',file:'psychology.json',description:'选择题、主观候选题、解析、来源及覆盖台账。'},
+ {key:'notes',label:'笔记原文索引',file:'notes.json',description:'8876条原文与稳定段落定位。原笔记可能有错，须结合修正阅读。'},
+ {key:'documents',label:'原始Word',file:'documents.json',description:'8份原始Word的私有文件包。不要在这里选择单个.docx。'}];
+const entries=new Map();let api=null,authorized=()=>false,epoch=0;
+const el=id=>document.getElementById(id),nodes=key=>({file:el('contentFile-'+key),choose:el('chooseContent-'+key),upload:el('uploadContent-'+key),name:el('contentName-'+key),meta:el('contentMeta-'+key),status:el('contentStatus-'+key)});
+function status(key,state,text){const n=nodes(key);n.status.dataset.state=state;n.status.textContent=text;}
+function overview(){const uploading=[...entries.values()].some(x=>x.uploading),saved=types.filter(t=>entries.get(t.key)?.saved).length;el('refreshPrivate').disabled=uploading||saved!==3;el('importOverview').textContent=uploading?'正在等待服务端确认，请保持页面打开。':`本次已确认导入 ${saved}/3 类文件。`;}
+function detect(p){if(p?.format&&['psychology-learning-record','psychology-combined-study-record','puxin-study-record'].includes(p.format))return 'record';if(Array.isArray(p?.memoryQuestions)&&Array.isArray(p?.predictions))return 'psychology';if(Array.isArray(p?.records))return 'notes';if(Array.isArray(p?.documents))return 'documents';return 'unknown';}
+function validate(key,p){
+ const found=detect(p);if(found==='record')throw Error('这是学习记录备份，请到顶部“我的账号”→“备份与恢复”导入。');
+ if(found!==key){const target=types.find(t=>t.key===found);throw Error(target?`文件类型不匹配：请在“${target.label}”卡片选择此文件。`:'文件格式无法识别。请解压导入包，选择卡片标注的 JSON 文件。');}
+ if(key==='psychology'){
+  if(!Array.isArray(p.sources)||!Array.isArray(p.knowledgePoints))throw Error('题库缺少来源或覆盖台账，请使用完整 psychology.json。');
+  for(const name of ['memoryQuestions','predictions']){const ids=p[name].map(q=>q?.id);if(ids.some(x=>typeof x!=='string'||!x)||new Set(ids).size!==ids.length)throw Error('题库包含缺失或重复题号，请重新取得完整文件。');}
+  return `${p.memoryQuestions.length}道选择题 · ${p.predictions.length}道主观候选题`;
+ }
+ if(key==='notes'){if(p.records.some(r=>!r||typeof r.id!=='string'||typeof(r.text??r.original_text)!=='string'))throw Error('笔记索引缺少稳定ID或原文，请使用 notes.json。');return `${p.records.length}条原文`;}
+ if(p.documents.some(d=>!d||typeof d.file_name!=='string'||!d.file_name.endsWith('.docx')||typeof d.base64!=='string'||!d.base64.startsWith('UEsD')))throw Error('Word文件包缺少有效.docx数据，请使用 documents.json。');return `${p.documents.length}份Word`;
+}
+async function inspect(key){
+ const n=nodes(key),file=n.file.files[0],stamp=epoch;
+ if(!file)return;entries.delete(key);n.upload.disabled=true;n.name.textContent=file.name;n.meta.textContent='';status(key,'waiting','正在本机读取与校验，尚未上传…');overview();
+ try{
+  if(!authorized())throw Error('请先登录并通过本人允许名单。');
+  if(!file.name.toLowerCase().endsWith('.json')||file.size>32*1024*1024)throw Error('请选择小于32 MB的 JSON。ZIP需先解压，Word请使用 documents.json。');
+  let payload;try{payload=JSON.parse(await file.text())}catch{throw Error('文件不是有效JSON。请重新解压导入包，不要选择ZIP或单个Word。');}
+  const summary=validate(key,payload),sha=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await file.arrayBuffer()))).map(x=>x.toString(16).padStart(2,'0')).join('');
+  if(stamp!==epoch||n.file.files[0]!==file||!authorized())return;
+  const version=payload.content_package_version||payload.metadata?.version||payload.version||'文件未标注';
+  entries.set(key,{payload,file,sha,summary,version,saved:false,uploading:false});n.meta.textContent=`版本：${version}\n${summary} · ${(file.size/1024/1024).toFixed(2)} MB\nSHA256：${sha}`;n.upload.disabled=false;n.upload.textContent='导入'+types.find(t=>t.key===key).label;status(key,'ready','格式校验通过，尚未上传。点击下方“导入”上传本人账户。');overview();
+ }catch(e){if(stamp!==epoch)return;n.file.value='';status(key,'error',e.message);overview();}
+}
+async function upload(key){
+ const entry=entries.get(key),n=nodes(key),stamp=epoch;if(!entry?.payload||entry.uploading||!authorized())return;
+ entry.uploading=true;n.upload.disabled=true;n.upload.textContent='导入中…';n.choose.disabled=true;status(key,'waiting','正在上传，等待服务端确认…');overview();
+ try{
+  const result=await api.setPrivateContent(key,entry.payload,progress=>{
+   if(stamp!==epoch||!authorized())return;
+   const completed=Number(progress?.received??progress?.completed??progress?.completed_chunks??progress?.uploaded??0),total=Number(progress?.total??progress?.total_chunks??0);
+   status(key,'waiting',(progress?.message||(progress?.phase==='commit'?'正在确认完整版本':'正在分片上传'))+(total?' · '+completed+'/'+total+' 片':'')+'；服务端尚未确认完成。');
+  });
+  if(stamp!==epoch||!authorized())return;
+  if(result.saved!==true||result.document_key!==key)throw Error('服务端未确认保存，请保留文件并重试。');
+  entry.saved=true;n.upload.textContent='已导入';entry.payload=null;entry.file=null;n.file.value='';status(key,'success','服务端已确认保存'+(result.updated_at?' · '+new Date(result.updated_at).toLocaleString():''));
+ }catch(e){if(stamp===epoch){n.upload.textContent='重试导入';status(key,'error','导入失败：'+e.message+' 文件仍在本机；点击重试可继续，由服务端确认保存。不会覆盖学习记录。');}}
+ finally{if(stamp===epoch){entry.uploading=false;n.choose.disabled=false;n.upload.disabled=entry.saved;overview();}}
+}
+function initialize(sync,check){api=sync;authorized=check;const host=el('contentImportCards');host.replaceChildren();
+ for(const t of types){const card=document.createElement('article');card.className='card import-card';card.dataset.contentKind=t.key;
+  const heading=document.createElement('h2');heading.textContent=t.label;const description=document.createElement('p');description.textContent=t.description;
+  const name=document.createElement('p');name.id='contentName-'+t.key;name.className='import-file-name';name.textContent='尚未选择文件';
+  const meta=document.createElement('p');meta.id='contentMeta-'+t.key;meta.className='import-meta';
+  const picker=document.createElement('input');picker.type='file';picker.id='contentFile-'+t.key;picker.accept='.json,application/json';picker.hidden=true;picker.onchange=()=>inspect(t.key);
+  const actions=document.createElement('div');actions.className='actions';const choose=document.createElement('button');choose.className='btn';choose.id='chooseContent-'+t.key;choose.textContent='选择 '+t.file;choose.onclick=()=>picker.click();
+  const send=document.createElement('button');send.className='btn primary';send.id='uploadContent-'+t.key;send.textContent='导入'+t.label;send.disabled=true;send.onclick=()=>upload(t.key);actions.append(choose,send);
+  const info=document.createElement('p');info.id='contentStatus-'+t.key;info.className='import-status';info.setAttribute('role','status');info.setAttribute('aria-live','polite');info.textContent='尚未选择文件。';
+  card.append(heading,description,name,meta,picker,actions,info);host.append(card);
+ }
+ el('refreshPrivate').onclick=()=>{if(![...entries.values()].some(x=>x.uploading))location.reload()};overview();
+}
+function reset(){epoch++;entries.clear();for(const t of types){const n=nodes(t.key);if(!n.file)continue;n.file.value='';n.upload.disabled=true;n.upload.textContent='导入'+t.label;n.choose.disabled=false;n.name.textContent='尚未选择文件';n.meta.textContent='';status(t.key,'','尚未选择文件。');}overview();}
+window.PrivateContentManager={initialize,reset};
+})();

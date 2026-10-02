@@ -32,7 +32,7 @@
     let result;try{result=await response.json()}catch{result={}}
     if(requestEpoch!==epoch)throw Error('账户会话已切换，此回复不会应用到新账户。');
     if(!response.ok){
-      if(result.code==='P0002')throw Error('本人私有内容尚未导入，请在登录后的内容管理中导入交付文件。');
+      if(result.code==='P0002'){const error=Error('本人私有内容尚未导入，请在左侧题库与资料管理中导入交付文件。');error.code='P0002';error.status=response.status;throw error;}
       if(response.status===429)throw Error('邮件或请求额度已达上限，请稍后重试；不会自动升级收费。');
       if([401,403].includes(response.status))throw Error('会话或学习数据权限未通过服务端验证，请检查登录与允许名单。');
       const code=String(result.code||result.error_code||'UNKNOWN').replace(/[^A-Za-z0-9_]/g,'').slice(0,32);
@@ -204,16 +204,44 @@
     session=normalize(response);write(sessionKey(),session);
     try{await activate()}catch(error){await signOut();throw error}
   }
+  const contentKeys=['psychology','politics','english','notes','documents'];
+  const contentHash=async text=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text)))).map(n=>n.toString(16).padStart(2,'0')).join('');
+  function contentChunks(text){
+    const chunks=[];let start=0;
+    while(start<text.length){let end=Math.min(start+100000,text.length);if(end<text.length&&text.charCodeAt(end-1)>=0xd800&&text.charCodeAt(end-1)<=0xdbff)end--;chunks.push(text.slice(start,end));start=end;}
+    return chunks;
+  }
   async function getPrivateContent(key){
     await initialize();
     if(!status.authenticated)throw Error('请先登录并通过本人允许名单。');
-    return request('/rest/v1/rpc/study_get_private_content',{p_key:key},true);
+    let manifest;
+    try{manifest=await request('/rest/v1/rpc/study_get_content_manifest',{p_key:key},true)}
+    catch(error){if(['P0002','PGRST202'].includes(error.code))return request('/rest/v1/rpc/study_get_private_content',{p_key:key},true);throw error}
+    if(!Number.isInteger(manifest.chunk_count)||manifest.chunk_count<1||manifest.chunk_count>512||manifest.byte_count>33554432)throw Error('服务端内容清单无效。');
+    const chunks=[];
+    for(let i=0;i<manifest.chunk_count;i++){const part=await request('/rest/v1/rpc/study_get_content_chunk',{p_upload:manifest.upload_id,p_index:i},true);if(part.chunk_index!==i||typeof part.content!=='string')throw Error('服务端内容分片无效。');chunks.push(part.content)}
+    const text=chunks.join('');if(new TextEncoder().encode(text).byteLength!==manifest.byte_count||await contentHash(text)!==manifest.sha256)throw Error('服务端内容校验失败，请重新读取。');
+    return JSON.parse(text);
   }
-  async function setPrivateContent(key,payload){
+  async function setPrivateContent(key,payload,onProgress=()=>{}){
     await initialize();
     if(!status.authenticated||status.readOnly)throw Error('请在本人已授权的主窗口导入内容。');
-    if(!['psychology','politics','english','notes','documents'].includes(key))throw Error('不支持的内容类型。');
-    return request('/rest/v1/rpc/study_set_private_content',{p_key:key,p_payload:payload},true);
+    if(!contentKeys.includes(key)||!payload||typeof payload!=='object'||Array.isArray(payload))throw Error('不支持的内容类型。');
+    const text=JSON.stringify(payload),bytes=new TextEncoder().encode(text).byteLength;
+    if(bytes>33554432)throw Error('内容超过32 MB限制。');
+    const chunks=contentChunks(text),hash=await contentHash(text);
+    let upload;
+    try{upload=await request('/rest/v1/rpc/study_begin_content_upload',{p_key:key,p_sha256:hash,p_bytes:bytes,p_chunks:chunks.length},true)}
+    catch(error){if(error.code==='PGRST202')throw Error('分批导入补丁尚未安装，请先执行 private-content-chunks.sql；不要再次单次上传大文件。');throw error}
+    const received=new Set(upload.received||[]);onProgress({received:received.size,total:chunks.length,phase:'upload'});
+    if(!upload.complete){for(let i=0;i<chunks.length;i++){if(received.has(i))continue;
+      const result=await request('/rest/v1/rpc/study_put_content_chunk',{p_upload:upload.upload_id,p_index:i,p_text:chunks[i]},true);
+      if(result.received!==true||result.chunk_index!==i)throw Error('服务端未确认此分片。');received.add(i);onProgress({received:received.size,total:chunks.length,phase:'upload'});
+    }}
+    onProgress({received:chunks.length,total:chunks.length,phase:'commit'});
+    const result=await request('/rest/v1/rpc/study_commit_content_upload',{p_upload:upload.upload_id},true);
+    if(result.saved!==true||result.document_key!==key||result.sha256!==hash)throw Error('服务端未确认完整内容版本。');
+    return result;
   }
   async function checkAccess(){
     await initialize();if(!status.authenticated)return false;

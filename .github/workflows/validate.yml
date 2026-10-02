@@ -19,4 +19,6 @@ jobs:
           node --check learning/app.js
           node --check learning/access.js
           node --check learning/sync.js
+          node --check learning/manager.js
           node scripts/test_sync.cjs
+          node scripts/test_content_chunks.cjs

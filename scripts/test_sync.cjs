@@ -15,9 +15,9 @@ function harness({loggedIn=true,locks=true,persistedStorage=null,serverState=nul
     if(state.offline)throw Error('fixture offline');
     if(path.includes('/otp'))return {ok:true,json:async()=>({})};
     if(path.includes('/logout'))return {ok:true,json:async()=>({})};
-    if(path.includes('study_set_private_content'))return state.privateError?
+    if(path.includes('study_begin_content_upload'))return state.privateError?
       {ok:false,status:state.privateError.status,json:async()=>({code:state.privateError.code})}:
-      {ok:true,status:200,json:async()=>({saved:true,document_key:body.p_key})};
+      {ok:true,status:200,json:async()=>({upload_id:'fixture-upload',received:[],complete:false})};
     if(path.includes('get_study_state'))return {ok:true,json:async()=>({user_id:'fixture-user',revision:state.revision,state:structuredClone(state.state)})};
     if(path.includes('submit_study_batch')){
       if(state.hold)await new Promise(r=>state.held=r);
@@ -57,7 +57,7 @@ function harness({loggedIn=true,locks=true,persistedStorage=null,serverState=nul
   let t=harness();assert.equal((await t.api.getStatus()).authenticated,true);
   for(const failure of [{status:500,code:'57014'},{status:404,code:'PGRST202'},{status:413,code:undefined}]){
     t.state.privateError=failure;
-    await assert.rejects(t.api.setPrivateContent('psychology',{}),error=>error.status===failure.status&&error.message.includes('HTTP '+failure.status)&&!error.message.includes('local-test-placeholder'));
+    await assert.rejects(t.api.setPrivateContent('psychology',{}),error=>failure.code==='PGRST202'?error.message.includes('private-content-chunks.sql'):error.status===failure.status&&error.message.includes('HTTP '+failure.status)&&!error.message.includes('local-test-placeholder'));
   }
   t.state.privateError=null;
   await assert.rejects(t.api.configure({url:'http://bad.invalid',publishableKey:'service_role'}));
