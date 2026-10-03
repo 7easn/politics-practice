@@ -2,10 +2,13 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const file=fs.readFileSync(__dirname+'/../learning/app.js','utf8');
 const names=['references','sourceLink','essayCoverage','correction'];
 const bodies=names.map(name=>{const start=file.indexOf('function '+name+'('),end=file.indexOf('\nfunction ',start+1);assert(start>=0&&end>start);return file.slice(start,end)}).join('\n');
-const sandbox={array:v=>Array.isArray(v)?v:[],esc:v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),urlSafe:v=>/^https:\/\//.test(v)?v:null,verified:v=>v.review_status==='verified',meta:()=>'',textBlock:v=>'<p>'+String(v)+'</p>',data:{sources:[{id:'SRC-test',title:'Global title',url:'https://global.invalid/source',quote:'Global stale quote',verification_status:'verified'}]}};
+const sandbox={array:v=>Array.isArray(v)?v:[],esc:v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),urlSafe:v=>/^https:\/\//.test(v)?v:null,verified:v=>v.review_status==='verified',meta:()=>'',textBlock:v=>'<p>'+String(v)+'</p>',data:{memoryQuestions:[],predictions:[],predictionCoverage:[],sources:[{id:'SRC-test',title:'Global title',url:'https://global.invalid/source',quote:'Global stale quote',verification_status:'verified'}]}};
 sandbox.window={NativeSubjectiveView:require("../learning/native-subjective-view.js")};
 const viewHelpers=["isQuestion","displayQuestion","originalQuestion"].map(name=>file.match(new RegExp("^const "+name+"=.*$","m"))[0]).join("\n");
-vm.createContext(sandbox);vm.runInContext(viewHelpers+"\n"+bodies,sandbox);
+const coverageStart=file.indexOf('let coverageViewsBank'),coverageEnd=file.indexOf('\nfunction coverageLinks',coverageStart);
+assert(coverageStart>=0&&coverageEnd>coverageStart);
+const coverageDependencies=file.match(/^const practiceDisabled=.*$/m)[0]+'\n'+file.slice(coverageStart,coverageEnd);
+vm.createContext(sandbox);vm.runInContext(viewHelpers+"\n"+coverageDependencies+"\n"+bodies,sandbox);
 let html=sandbox.references({source_ids:['SRC-test'],source_refs:[{id:'SRC-test',alias_id:'A',url:'https://scoped.invalid/source',title:'Scoped title',short_quote:'Actual bounded quote',verification_scope:'Abstract only',excerpt_scope:'Read paragraph 3',excerpt_verification_status:'verified-excerpt-only'}]});
 assert(html.includes('https://scoped.invalid/source'));assert(!html.includes('https://global.invalid/source'));assert(!html.includes('Global stale quote'));assert(html.includes('Actual bounded quote'));assert(html.includes('Abstract only'));assert(html.includes('Read paragraph 3'));assert(html.includes('不代表本题全部核准'));
 html=sandbox.references({source_refs:[{id:'SRC-test',url:'https://scoped.invalid/source',short_quote:''}]});assert(!html.includes('Global stale quote'));assert(html.includes('仍待补核'));
@@ -15,6 +18,11 @@ html=sandbox.references({source_refs:[{id:'SRC-test',url:'https://scoped.invalid
 html=sandbox.essayCoverage({coverage_role:'direct_subquestion',counts_as_full_coverage:false,mappings:[{question_id:'Q1',prompt_clause:'subquestion',answer_point_indexes:[1],counts_as_full_coverage:false}],held_mappings:[{question_id:'Q2',local_hold_reason:'missing exact clause'}]});assert(html.includes('不计完整覆盖'));assert(html.includes('另有 1 条待核映射'));assert(!html.includes('data-open-question="Q2"'));
 html=sandbox.essayCoverage({coverage_role:'direct_subquestion',counts_as_full_coverage:true,review_status:'needs-review'});assert(html.includes('尚待独立核准'));assert(!html.includes('已核准完整覆盖'));
 html=sandbox.essayCoverage({coverage_role:'direct_subquestion',counts_as_full_coverage:true,review_status:'verified',joint_coverage_requires_all_question_ids:['Q1','Q2'],original_claim_verified:false});assert(html.includes('须同时具备全部关联题：Q1、Q2'));assert(html.includes('原笔记断言未经核准'));
+// Execute the current display projection with synthetic exact IDs, not a no-op stub.
+const target={id:'T1',title:'Finite synthetic target',review_status:'needs-review',counts_as_full_coverage:null,mappings:[],held_mappings:[]};
+sandbox.data={...sandbox.data,predictionCoverage:[target],predictions:[{id:'Q1',prompt:'Synthetic question',answer_points:['Synthetic point'],review_status:'needs-review',coverage_targets:[{target_id:'T1',question_id:'Q1',answer_point_indexes:[1],prompt_clause:'Exact synthetic clause',counts_as_full_coverage:true}]},{id:'STOPPED',safe_for_quiz:false,answer_points:['Point'],coverage_targets:[{target_id:'T1',question_id:'STOPPED',answer_point_indexes:[1]}]}]};
+const snapshot=JSON.stringify(sandbox.data);
+html=sandbox.essayCoverage(target);assert(html.includes('data-open-question="Q1"'));assert(html.includes('Q1 · 待核'));assert(html.includes('当前题明确目标的有限显示关联'));assert(html.includes('不计完整覆盖'));assert(!html.includes('data-open-question="STOPPED"'));assert.strictEqual(JSON.stringify(sandbox.data),snapshot);assert.strictEqual(target.counts_as_full_coverage,null);assert.strictEqual(target.mappings.length,0);
 html=sandbox.correction({before_type:'issue-summary',before:'Summary not quotation',source_ids:[]});assert(html.includes('非原笔记逐字引用'));assert(!html.includes('<blockquote>Summary not quotation'));
 html=sandbox.correction({before_type:'exact-note-excerpt',before:'Exact note',source_ids:[]});assert(html.includes('<blockquote>Exact note</blockquote>'));
 console.log('PASS: scoped provenance, v8 fallback, escaping, partial coverage, held mappings and correction labels. ');
