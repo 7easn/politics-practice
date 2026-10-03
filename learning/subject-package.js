@@ -49,7 +49,13 @@ function validateManifest(m){
  return m;
 }
 function crc32(bytes){let crc=0xffffffff;for(const v of bytes){crc^=v;for(let i=0;i<8;i++)crc=(crc>>>1)^((crc&1)?0xedb88320:0)}return (crc^0xffffffff)>>>0}
-function unzipStored(buffer){
+async function inflateBounded(packed,size){
+ let inflater;try{inflater=new DecompressionStream('deflate-raw')}catch{throw Error('当前浏览器不支持压缩科目包，请更新浏览器后直接导入该ZIP。')}
+ const reader=new Blob([packed]).stream().pipeThrough(inflater).getReader(),body=new Uint8Array(size);let length=0;
+ try{for(;;){const {value,done}=await reader.read();if(done)break;if(length+value.length>size)throw Error('ZIP解压对象超过声明尺寸。');body.set(value,length);length+=value.length}if(length!==size)throw Error('ZIP解压对象长度不符。');return body}
+ catch(e){await reader.cancel().catch(()=>{});throw Error('ZIP解压校验失败：'+e.message)}finally{reader.releaseLock()}
+}
+async function unzipBounded(buffer){
  const bytes=new Uint8Array(buffer),v=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),entries=new Map();
  if(bytes.length>MAX_TOTAL+1048576||bytes.length<22)throw Error('ZIP大小无效。');
  let end=-1;for(let p=bytes.length-22;p>=Math.max(0,bytes.length-65557);p--)if(v.getUint32(p,true)===0x06054b50&&p+22+v.getUint16(p+20,true)===bytes.length){end=p;break}
@@ -59,13 +65,13 @@ function unzipStored(buffer){
  for(let i=0;i<count;i++){
   if(pos+46>end||v.getUint32(pos,true)!==0x02014b50)throw Error('ZIP目录损坏。');
   const flags=v.getUint16(pos+8,true),method=v.getUint16(pos+10,true),crc=v.getUint32(pos+16,true),packed=v.getUint32(pos+20,true),size=v.getUint32(pos+24,true),nl=v.getUint16(pos+28,true),extra=v.getUint16(pos+30,true),comment=v.getUint16(pos+32,true),offset=v.getUint32(pos+42,true);
-  if(pos+46+nl+extra+comment>end||flags&~2048||method!==0||packed!==size||size>LIMIT||v.getUint16(pos+34,true)!==0||offset+30>v.getUint32(end+16,true))throw Error('请选择规范未压缩完整包；不接受加密、ZIP64或压缩扩展。');
+  if(pos+46+nl+extra+comment>end||flags&~2048||![0,8].includes(method)||method===0&&packed!==size||packed>LIMIT+1024||size<1||size>LIMIT||v.getUint16(pos+34,true)!==0||offset+30>v.getUint32(end+16,true))throw Error('请选择规范完整包；仅接受普通或DEFLATE压缩ZIP，不接受加密、多卷和ZIP64。');
   const name=decoder.decode(bytes.subarray(pos+46,pos+46+nl));if(name!=='manifest.json'&&!/^objects\/\d{4}\.(json|bin)$/.test(name)||entries.has(name))throw Error('ZIP路径或重复条目无效。');
-  if(v.getUint32(offset,true)!==0x04034b50||v.getUint16(offset+6,true)!==flags||v.getUint16(offset+8,true)!==method||v.getUint32(offset+14,true)!==crc||v.getUint32(offset+18,true)!==size||v.getUint32(offset+22,true)!==size)throw Error('ZIP文件头不一致。');
-  const localName=v.getUint16(offset+26,true),localExtra=v.getUint16(offset+28,true),start=offset+30+localName+localExtra,finish=start+size;
+  if(v.getUint32(offset,true)!==0x04034b50||v.getUint16(offset+6,true)!==flags||v.getUint16(offset+8,true)!==method||v.getUint32(offset+14,true)!==crc||v.getUint32(offset+18,true)!==packed||v.getUint32(offset+22,true)!==size)throw Error('ZIP文件头不一致。');
+  const localName=v.getUint16(offset+26,true),localExtra=v.getUint16(offset+28,true),start=offset+30+localName+localExtra,finish=start+packed;
   if(finish>v.getUint32(end+16,true)||decoder.decode(bytes.subarray(offset+30,offset+30+localName))!==name)throw Error('ZIP对象边界无效。');
   if(ranges.some(([a,b])=>offset<b&&finish>a))throw Error('ZIP条目重叠。');ranges.push([offset,finish]);
-  const body=bytes.subarray(start,finish);if(crc32(body)!==crc)throw Error('ZIP对象校验失败。');total+=size;if(total>MAX_TOTAL)throw Error('ZIP总量超过限制。');entries.set(name,body);pos+=46+nl+extra+comment;
+  total+=size;if(total>MAX_TOTAL)throw Error('ZIP解压总量超过限制。');const payload=bytes.subarray(start,finish),body=method===0?payload:await inflateBounded(payload,size);if(crc32(body)!==crc)throw Error('ZIP对象校验失败。');entries.set(name,body);pos+=46+nl+extra+comment;
  }
  if(pos!==end||!entries.has('manifest.json')||entries.get('manifest.json').length>131072)throw Error('ZIP缺少完整清单。');return entries;
 }
@@ -80,7 +86,7 @@ function parseObject(o,body){
  return value;
 }
 async function inspect(buffer){
- const entries=unzipStored(buffer),manifestBytes=entries.get('manifest.json'),manifest=validateManifest(JSON.parse(decoder.decode(manifestBytes)));
+ const entries=await unzipBounded(buffer),manifestBytes=entries.get('manifest.json'),manifest=validateManifest(JSON.parse(decoder.decode(manifestBytes)));
  if(entries.size!==manifest.objects.length+1)throw Error('ZIP有未声明或缺失条目。');
  const parsed=new Map(),ids=new Set(),notes=new Set();
  for(const o of manifest.objects){const body=entries.get(o.path);if(!body||body.length!==o.bytes||await hash(body)!==o.sha256)throw Error('清单SHA或对象长度不符。');const value=parseObject(o,body);parsed.set(o.index,value);

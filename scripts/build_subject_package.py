@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Build one private, stored-ZIP subject container. No network or publication."""
+"""Build one private, bounded-ZIP subject container. No network or publication."""
 import argparse, base64, hashlib, json, pathlib, zipfile
 LIMIT = 256 * 1024
 
 def encoded(value):
     return json.dumps(value, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
 
-def build(subject, version, bank, notes, documents, review, output, review_index=None, evidence_root=None):
+def build(subject, version, bank, notes, documents, review, output, review_index=None, evidence_root=None, compression="deflate"):
+    if compression not in ('stored','deflate'): raise ValueError('Unsupported ZIP compression')
+    method=zipfile.ZIP_DEFLATED if compression=='deflate' else zipfile.ZIP_STORED
     if subject not in ('psychology', 'politics', 'english'):
         raise ValueError('Unsupported subject')
     if not isinstance(review, dict) or review.get('status') not in ('incomplete', 'reviewed-with-limitations', 'reviewed') or not isinstance(review.get('scope'), str) or not isinstance(review.get('limitations'), list):
@@ -66,14 +68,14 @@ def build(subject, version, bank, notes, documents, review, output, review_index
     body=encoded(manifest)
     if len(body)>128*1024 or len(objects)>2048 or sum(o['bytes'] for o in objects)>128*1024*1024:raise ValueError('Package resource limit')
     output=pathlib.Path(output);output.parent.mkdir(parents=True,exist_ok=True)
-    with zipfile.ZipFile(output,'w',compression=zipfile.ZIP_STORED,allowZip64=False) as z:
+    with zipfile.ZipFile(output,'w',compression=method,compresslevel=9 if method==zipfile.ZIP_DEFLATED else None,allowZip64=False) as z:
         for name,data in [('manifest.json',body),*bodies.items()]:
-            entry=zipfile.ZipInfo(name,date_time=(2026,1,1,0,0,0));entry.compress_type=zipfile.ZIP_STORED;entry.external_attr=0o600 << 16;z.writestr(entry,data)
+            entry=zipfile.ZipInfo(name,date_time=(2026,1,1,0,0,0));entry.compress_type=method;entry.external_attr=0o600 << 16;z.writestr(entry,data,compress_type=method,compresslevel=9 if method==zipfile.ZIP_DEFLATED else None)
     return {'objects':len(objects),'bytes':output.stat().st_size,'manifest_sha256':hashlib.sha256(body).hexdigest(),'package_sha256':hashlib.sha256(output.read_bytes()).hexdigest(),'file_complete':True,'semantic_review':review}
 
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--subject',required=True);p.add_argument('--version',required=True)
     for name in ('bank','notes','documents','review','output'):p.add_argument('--'+name,required=True)
-    p.add_argument('--review-index');p.add_argument('--evidence-root')
+    p.add_argument('--compression',choices=['stored','deflate'],default='deflate');p.add_argument('--review-index');p.add_argument('--evidence-root')
     a=p.parse_args();load=lambda n:json.loads(pathlib.Path(getattr(a,n)).read_text())
-    print(json.dumps(build(a.subject,a.version,load('bank'),load('notes'),load('documents'),load('review'),a.output,load('review_index') if a.review_index else None,a.evidence_root),ensure_ascii=False))
+    print(json.dumps(build(a.subject,a.version,load('bank'),load('notes'),load('documents'),load('review'),a.output,load('review_index') if a.review_index else None,a.evidence_root,a.compression),ensure_ascii=False))
