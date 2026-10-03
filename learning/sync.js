@@ -20,14 +20,18 @@
   function normalize(s){return {access_token:s.access_token,refresh_token:s.refresh_token,
     expires_at:s.expires_at||Math.floor(Date.now()/1000)+(s.expires_in||3600),user:{id:s.user.id,email:s.user.email||''}}}
   async function request(path,body,authenticated=false,logoutSession=null){
-    const requestEpoch=epoch;
+    const requestEpoch=epoch,requestName=path.split('?')[0].split('/').pop().replace(/[^A-Za-z0-9_-]/g,'').slice(0,80),started=Date.now();let response;
+    try{
     if(!config)throw Error('尚未配置同步项目。');
     if(authenticated&&!logoutSession)await ensureSession();
     const headers={'apikey':config.publishableKey,'Content-Type':'application/json'};
     if(authenticated)headers.Authorization='Bearer '+(logoutSession||session).access_token;
-    let response,result,timedOut=false;const local=new AbortController(),globalSignal=controller.signal,abort=()=>local.abort();globalSignal.addEventListener('abort',abort,{once:true});if(globalSignal.aborted)local.abort();const timer=setTimeout(()=>{timedOut=true;local.abort()},30000);
-    try{response=await fetch(config.url+path,{method:'POST',headers,body:JSON.stringify(body),cache:'no-store',signal:local.signal});try{result=await response.json()}catch(error){if(local.signal.aborted)throw error;result={}}}
-    catch{const error=Error(timedOut?'请求等待超过30秒，请重试；本机学习记录仍保留。':'网络不可用，本机未同步操作已保留。');error.code=timedOut?'REQUEST_TIMEOUT':'NETWORK_UNAVAILABLE';throw error}finally{clearTimeout(timer);globalSignal.removeEventListener('abort',abort)}
+    let result,timedOut=false;const local=new AbortController(),globalSignal=controller.signal,abort=()=>local.abort();globalSignal.addEventListener('abort',abort,{once:true});if(globalSignal.aborted)local.abort();const timer=setTimeout(()=>{timedOut=true;local.abort()},30000);
+    const interrupted=()=>{const cancelled=globalSignal.aborted&&!timedOut,error=Error(timedOut?'请求等待超过30秒，请重试；本机学习记录仍保留。':cancelled?'请求因账户会话切换或取消而中止；本机学习记录仍保留。':response?'响应读取中断；本机学习记录仍保留。':'请求未取得可读响应（网络、跨域或连接中断均可能）；本机未同步操作已保留。');error.code=timedOut?'REQUEST_TIMEOUT':cancelled?'REQUEST_CANCELLED':response?'RESPONSE_READ_FAILED':'NETWORK_UNAVAILABLE';return error};
+    try{
+      try{response=await fetch(config.url+path,{method:'POST',headers,body:JSON.stringify(body),cache:'no-store',signal:local.signal})}catch{throw interrupted()}
+      try{result=await response.json()}catch(cause){if(local.signal.aborted)throw interrupted();if(!response.ok)result={};else{const error=Error(cause?.name==='SyntaxError'?'服务端返回无效JSON；没有确认保存。':'响应正文读取中断；没有确认保存。');error.code=cause?.name==='SyntaxError'?'RESPONSE_INVALID_JSON':'RESPONSE_READ_FAILED';throw error}}
+    }finally{clearTimeout(timer);globalSignal.removeEventListener('abort',abort)}
     if(requestEpoch!==epoch)throw Error('账户会话已切换，此回复不会应用到新账户。');
     if(!response.ok){
       if(result.code==='P0002'){const error=Error('本人私有内容尚未导入，请在左侧题库与资料管理中导入交付文件。');error.code='P0002';error.status=response.status;throw error;}
@@ -40,6 +44,7 @@
       error.status=response.status;error.code=code;throw error;
     }
     return result;
+    }catch(error){if(!error.requestName)error.requestName=requestName;if(error.requestStatus===undefined)error.requestStatus=Number.isInteger(response?.status)?response.status:Number.isInteger(error.status)?error.status:null;if(error.requestElapsedMs===undefined)error.requestElapsedMs=Date.now()-started;throw error}
   }
   async function ensureSession(){
     if(!session?.refresh_token)throw Error('请先通过邮箱链接登录。');
@@ -299,19 +304,21 @@
   }
   async function setSubjectPackage(pack,onProgress=()=>{}){
     await initialize();const stamp=epoch,owner=cacheOwner(),guard=()=>{if(stamp!==epoch||owner!==cacheOwner()||!status.authenticated||status.readOnly)throw Error('账户已切换或不可写，完整包导入取消。')};guard();
-    if(!window.SubjectPackage||!pack?.entries)throw Error('请选择完整科目包。');const m=window.SubjectPackage.validateManifest(pack.manifest),sha=await window.SubjectPackage.hash(new TextEncoder().encode(pack.manifestText));if(sha!==pack.manifestSHA)throw Error('本机清单已变化。');guard();
-    let active;try{active=await request('/rest/v1/rpc/study_get_subject_package',{p_subject:m.subject},true)}catch(error){if(error.code==='PGRST202')throw Error('完整包服务尚未安装；没有调用旧全量提交接口。');throw error}guard();
+    if(!window.SubjectPackage||!pack?.entries)throw Error('请选择完整科目包。');const m=window.SubjectPackage.validateManifest(pack.manifest);let confirmed=0;
+    const packageRequest=async(phase,path,body)=>{onProgress({phase,received:confirmed,total:m.objects.length,message:({baseline:'正在核对本科当前版本',begin:'正在创建或恢复导入草稿',files:'正在核验原始Word完整SHA',commit:'所有对象收据已齐，正在确认本科激活',confirm:'正在核对激活结果'})[phase]||'正在逐对象上传与服务端核验'});try{return await request(path,body,true)}catch(error){error.importPhase=phase;error.importReceived=confirmed;error.importTotal=m.objects.length;error.importObjectIndex=Number.isInteger(body.p_index)?body.p_index:null;error.message+=' 定位：'+({baseline:'当前版本核对',begin:'草稿创建/恢复',upload:'对象上传',files:'Word校验',commit:'最终激活',confirm:'激活结果核对'})[phase]+' / '+(error.requestName||path.split('/').pop())+' / HTTP '+(error.requestStatus??'未取得')+' / 已确认 '+confirmed+'/'+m.objects.length+(Number.isInteger(body.p_index)?' / 对象索引 '+body.p_index:'')+' / '+(error.requestElapsedMs??0)+'毫秒。';throw error}};
+    const sha=await window.SubjectPackage.hash(new TextEncoder().encode(pack.manifestText));if(sha!==pack.manifestSHA)throw Error('本机清单已变化。');guard();
+    let active;try{active=await packageRequest('baseline','/rest/v1/rpc/study_get_subject_package',{p_subject:m.subject})}catch(error){if(error.code==='PGRST202')throw Error('完整包服务尚未安装；没有调用旧全量提交接口。');throw error}guard();
     const intentKey='psychology-package-intent-v1:'+owner+':'+m.subject+':'+sha;
     if(active.sha256===sha){try{localStorage.removeItem(intentKey)}catch{}return {saved:true,subject:m.subject,sha256:sha,already_active:true};}
     if(typeof active.baseline!=='string')throw Error('服务端未确认本科基线。');
     let intent;try{const saved=localStorage.getItem(intentKey);intent=saved?JSON.parse(saved):{baseline:active.baseline};if(typeof intent.baseline!=='string')throw Error('恢复标记无效');if(intent.baseline!==active.baseline){const changed=Error('开始上传后云端本科版本已改变；请核对当前版本并取得新的完整包。本次没有覆盖它。');changed.code='40001';throw changed}localStorage.setItem(intentKey,JSON.stringify(intent));}catch(error){if(error.code==='40001')throw error;throw Error('无法保存导入恢复标记；尚未上传或激活，请保留文件并检查本机存储。')}
-    const upload=await request('/rest/v1/rpc/study_begin_subject_package',{p_manifest:pack.manifestText,p_expected_baseline:intent.baseline},true);guard();if(upload.sha256!==sha||typeof upload.package_id!=='string')throw Error('服务端未确认完整包草稿。');const received=new Set(upload.received||[]);
+    const upload=await packageRequest('begin','/rest/v1/rpc/study_begin_subject_package',{p_manifest:pack.manifestText,p_expected_baseline:intent.baseline});guard();if(upload.sha256!==sha||typeof upload.package_id!=='string')throw Error('服务端未确认完整包草稿。');const received=new Set(upload.received||[]);confirmed=received.size;
     for(const o of m.objects){if(received.has(o.index))continue;guard();const bytes=pack.entries.get(o.path);if(!bytes||bytes.length!==o.bytes||await window.SubjectPackage.hash(bytes)!==o.sha256)throw Error('本机对象已变化。');let base64='';for(let i=0;i<bytes.length;i+=24576)base64+=btoa(String.fromCharCode(...bytes.subarray(i,i+24576)));
-      const r=await request('/rest/v1/rpc/study_put_subject_object',{p_package:upload.package_id,p_index:o.index,p_base64:base64},true);guard();if(r.received!==true||r.index!==o.index||r.sha256!==o.sha256)throw Error('服务端未确认科目对象。');received.add(o.index);onProgress({phase:'upload',received:received.size,total:m.objects.length});
+      const r=await packageRequest('upload','/rest/v1/rpc/study_put_subject_object',{p_package:upload.package_id,p_index:o.index,p_base64:base64});guard();if(r.received!==true||r.index!==o.index||r.sha256!==o.sha256)throw Error('服务端未确认科目对象。');received.add(o.index);confirmed=received.size;onProgress({phase:'upload',received:received.size,total:m.objects.length});
     }
-    const documents=await window.SubjectPackage.materialize(pack,'documents');guard();for(const doc of documents.documents){onProgress({phase:'files',received:received.size,total:m.objects.length,message:'正在核验原始Word完整SHA'});const r=await request('/rest/v1/rpc/study_verify_subject_asset',{p_package:upload.package_id,p_field:doc.asset_field},true);guard();if(r.verified!==true||r.field!==doc.asset_field||r.sha256!==doc.sha256)throw Error('服务端未确认原始文件完整SHA。');}
+    const documents=await window.SubjectPackage.materialize(pack,'documents');guard();for(const doc of documents.documents){onProgress({phase:'files',received:received.size,total:m.objects.length,message:'正在核验原始Word完整SHA'});const r=await packageRequest('files','/rest/v1/rpc/study_verify_subject_asset',{p_package:upload.package_id,p_field:doc.asset_field});guard();if(r.verified!==true||r.field!==doc.asset_field||r.sha256!==doc.sha256)throw Error('服务端未确认原始文件完整SHA。');}
     guard();onProgress({phase:'commit',received:received.size,total:m.objects.length});let result;
-    try{result=await request('/rest/v1/rpc/study_commit_subject_package',{p_package:upload.package_id},true)}catch(error){guard();if(['40001','22023','42501'].includes(error.code)||[401,403].includes(error.status))throw error;let current;try{current=await request('/rest/v1/rpc/study_get_subject_package',{p_subject:m.subject},true)}catch{const uncertain=Error('提交结果未确认；保留当前界面，请联网核对本科版本。');uncertain.commitUncertain=true;throw uncertain}if(current.sha256!==sha)throw error;result={saved:true,subject:m.subject,sha256:sha,updated_at:current.updated_at}}
+    try{result=await packageRequest('commit','/rest/v1/rpc/study_commit_subject_package',{p_package:upload.package_id})}catch(error){guard();if(['40001','22023','42501'].includes(error.code)||[401,403].includes(error.status))throw error;let current;try{current=await packageRequest('confirm','/rest/v1/rpc/study_get_subject_package',{p_subject:m.subject})}catch(confirmError){const uncertain=Error('提交结果未确认；保留当前界面，请联网核对本科版本。 '+error.message+' 结果核对：'+confirmError.message);uncertain.commitUncertain=true;throw uncertain}if(current.sha256!==sha)throw error;result={saved:true,subject:m.subject,sha256:sha,updated_at:current.updated_at}}
     guard();if(result.saved!==true||result.subject!==m.subject||result.sha256!==sha)throw Error('服务端未确认本科原子激活。');try{localStorage.removeItem(intentKey)}catch{}return {...result,requiresManualReload:true};
   }
 

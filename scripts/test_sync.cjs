@@ -16,7 +16,7 @@ function harness({loggedIn=true,locks=true,persistedStorage=null,serverState=nul
     if(path.includes('/otp'))return {ok:true,json:async()=>({})};
     if(path.includes('/logout')){if(state.holdLogout)await new Promise(r=>state.releaseLogout=r);return {ok:true,json:async()=>({})};}
     if(path.includes('study_begin_content_upload'))return state.privateError?
-      {ok:false,status:state.privateError.status,json:async()=>({code:state.privateError.code})}:
+      {ok:state.privateError.status===200,status:state.privateError.status,json:async()=>{if(state.privateError.parseFailure){const e=state.privateError.parseFailure==='invalid'?new SyntaxError('synthetic invalid JSON'):new TypeError('synthetic body stream failed');throw e}return {code:state.privateError.code}}}:
       {ok:true,status:200,json:async()=>({upload_id:'fixture-upload',received:[],complete:false})};
     if(path.includes('get_study_state'))return {ok:true,json:async()=>({user_id:'fixture-user',revision:state.revision,state:structuredClone(state.state)})};
     if(path.includes('submit_study_batch')){
@@ -61,10 +61,13 @@ function harness({loggedIn=true,locks=true,persistedStorage=null,serverState=nul
     t.state.privateError=failure;
     await assert.rejects(t.api.setPrivateContent('psychology',{}),error=>failure.code==='PGRST202'?error.message.includes('private-content-chunks.sql'):error.status===failure.status&&error.message.includes('HTTP '+failure.status)&&!error.message.includes('local-test-placeholder'));
   }
+  for(const failure of [{status:200,parseFailure:'invalid',code:'RESPONSE_INVALID_JSON'},{status:200,parseFailure:'stream',code:'RESPONSE_READ_FAILED'},{status:502,parseFailure:'invalid',code:'UNKNOWN'}]){
+    t.state.privateError=failure;await assert.rejects(t.api.setPrivateContent('psychology',{}),error=>error.requestName==='study_begin_content_upload'&&error.requestStatus===failure.status&&error.code===failure.code&&Number.isInteger(error.requestElapsedMs)&&!error.message.includes('网络不可用'));
+  }
   t.state.privateError=null;
   await assert.rejects(t.api.configure({url:'http://bad.invalid',publishableKey:'service_role'}));
   let local={answers:{Q:{correct:true,selected:[1],attempts:1,time:'local-time'}},wrong:[],favorites:['Q'],notes:{secretDraft:'must remain local'}};
-  t.state.offline=true;await assert.rejects(t.api.sync(local));
+  t.state.offline=true;await assert.rejects(t.api.sync(local),error=>error.code==='NETWORK_UNAVAILABLE'&&error.requestName==='submit_study_batch'&&error.requestStatus===null&&!error.message.includes('local-test-placeholder'));
   assert.equal((await t.api.getStatus()).pending,2);
   assert(!JSON.stringify(t.calls).includes('must remain local'));
   t.state.offline=false;t.state.loseReply=true;await assert.rejects(t.api.sync(local));
