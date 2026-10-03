@@ -22,6 +22,7 @@ jobs:
           node --check learning/manager.js
           node --check learning/subjective-merge.js
           node scripts/test_sync.cjs
+          node scripts/test_record_restore.cjs
           node scripts/test_content_chunks.cjs
           node scripts/test_answer_display.cjs
           node scripts/test_source_display.cjs

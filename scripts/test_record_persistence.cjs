@@ -1,0 +1,66 @@
+// Fresh local Chrome with real app/sync modules and mocked RPC only; no real owner session.
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE_PATH||'playwright');
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),http=require('node:http');
+const root=path.resolve(__dirname,'..'),out=path.join(root,'private/record-persistence-check');
+const uid='10000000-0000-4000-8000-000000000001',accountKey='psychology-learning-v2-user-'+uid,project='https://fixture-project.supabase.co';
+const qid='fixture-verified-Q',pendingId='fixture-pending-Q';
+const empty=()=>({answers:{},wrong:[],favorites:[]});
+const bank={version:'fixture-v1',subjects:[{id:'test',title:'合成科目'}],sources:[],knowledgePoints:[],predictions:[{id:'fixture-essay',subject:'test',prompt:'合成主观题',answer_points:['合成要点'],review_status:'verified'}],corrections:[],predictionCoverage:[],trend:{},memoryQuestions:[{id:qid,subject:'test',prompt:'合成选择题',options:['甲','乙'],answer:[0],review_status:'verified'},{id:pendingId,subject:'test',prompt:'合成待核验题',options:['甲','乙'],answer:[0],review_status:'needs-review'}]};
+const harness=`<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/learning/style.css"></head><body><button id="saveStatus"></button><script src="/learning/shell.js"></script><script>document.body.insertAdjacentHTML('beforeend',window.STUDY_SHELL);window.PSYCH_SYNC_CONFIG={url:'${project}',publishableKey:'sb_publishable_fixture'};</script><script src="/learning/sync.js"></script><script>const actualRestore=window.PsychSync.getAccountState;window.PsychSync.getAccountState=async()=>{const snapshot=await actualRestore();const delay=Number(new URL(location.href).searchParams.get('restoreDelay'))||0;if(delay)await new Promise(r=>setTimeout(r,delay));return snapshot};</script><script src="/learning/app.js"></script></body></html>`;
+const server=http.createServer((req,res)=>{const pathname=new URL(req.url,'http://local').pathname;if(pathname==='/'){res.setHeader('Content-Type','text/html; charset=utf-8');return res.end(harness)}if(!['/learning/app.js','/learning/style.css','/learning/shell.js','/learning/sync.js'].includes(pathname)){res.statusCode=404;return res.end()}res.setHeader('Content-Type',pathname.endsWith('.css')?'text/css':'text/javascript; charset=utf-8');res.end(fs.readFileSync(path.join(root,pathname)))});
+(async()=>{await new Promise(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+server.address().port;let browser;const results=[];
+try{browser=await chromium.launch({headless:true,...(process.env.CHROME_BINARY?{executablePath:process.env.CHROME_BINARY}:{})});
+async function device(remote,{seed=null,delay=0}={}){
+ const context=await browser.newContext({viewport:{width:390,height:844}}),errors=[],calls=[];
+ await context.addInitScript(({project,uid,accountKey,seed})=>{
+  if(localStorage.getItem('fixture-initialized'))return;localStorage.setItem('fixture-initialized','yes');
+  localStorage.setItem('psychology-sync-session-v1:'+project,JSON.stringify({access_token:'synthetic-not-a-real-token',refresh_token:'synthetic-not-a-real-refresh',expires_at:Date.now()/1000+3600,user:{id:uid,email:'fixture@example.invalid'}}));
+  if(seed)localStorage.setItem(accountKey,JSON.stringify(seed));
+ },{project,uid,accountKey,seed});
+ await context.route('**/*',async route=>{
+  const url=new URL(route.request().url());if(url.origin===base)return route.continue();if(url.origin!==project)return route.abort();
+  const body=route.request().postDataJSON();calls.push({rpc:url.pathname,body});let result,status=200;
+  if(url.pathname.endsWith('get_study_state'))result={user_id:uid,revision:remote.revision,state:structuredClone(remote.state)};
+  else if(url.pathname.endsWith('study_get_content_manifest')){result={code:'P0002'};status=404}
+  else if(url.pathname.endsWith('study_get_private_content'))result=bank;
+  else if(url.pathname.endsWith('submit_study_batch')){
+   if(remote.offline){result={code:'57014'};status=500}
+   else{
+    const accepted=[];const fresh=body.operations.filter(o=>!remote.ids.has(o.id));
+    if(fresh.length&&body.expected_revision!==remote.revision)result={status:'conflict',revision:remote.revision,state:structuredClone(remote.state),accepted:body.operations.filter(o=>remote.ids.has(o.id)).map(o=>o.id)};
+    else{for(const op of body.operations){accepted.push(op.id);if(remote.ids.has(op.id))continue;remote.ids.add(op.id);remote.revision++;
+     if(op.kind==='answer'||op.kind==='import_answer'){const old=remote.state.answers[op.target];remote.state.answers[op.target]={...op.payload,attempts:op.kind==='answer'?(old?.attempts||0)+1:Math.max(old?.attempts||0,op.payload.attempts),firstCorrect:old?.firstCorrect??op.payload.correct,time:new Date().toISOString()}}
+     else{const field=op.kind==='wrong'?'wrong':'favorites';remote.state[field]=remote.state[field].filter(id=>id!==op.target);if(op.payload.value)remote.state[field].push(op.target)}
+    }result={status:'ok',revision:remote.revision,state:structuredClone(remote.state),accepted}}
+   }
+  }else throw Error('Unexpected mocked endpoint '+url.pathname);
+  await route.fulfill({status,contentType:'application/json',body:JSON.stringify(result)});
+ });
+ const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await page.goto(base+'/?restoreDelay='+delay+'#memory');await page.waitForSelector('[data-choice]');
+ return{context,page,errors,calls};
+}
+const remote=()=>({revision:0,state:empty(),ids:new Set(),offline:false});
+const storage=(page)=>page.evaluate(key=>JSON.parse(localStorage.getItem(key)),accountKey);
+const filter=async(page,id= qid)=>{await page.locator('#search').fill(id);await page.locator('#practice').selectOption('unseen')};
+const record={correct:false,firstCorrect:false,attempts:1,selected:[1],time:'2026-10-03T00:00:00Z'};
+const seed={version:2,answers:{[qid]:record},wrong:[qid],favorites:[qid],notes:{'fixture-essay':{text:'保留合成草稿',time:'2026-10-03T00:00:00Z'}},legacyRecords:{unknown:{kept:true}},updatedAt:'2026-10-03T00:00:00Z'};
+// A durable answer exists but there is no queue: startup must not erase it with an empty cloud snapshot.
+const orphanServer=remote(),orphan=await device(orphanServer,{seed});await filter(orphan.page);
+if(process.env.REGRESSION_EXPECT_LOSS==='1'){
+ assert.equal(await orphan.page.locator(`[data-id="${qid}"]`).count(),1);assert(!(await storage(orphan.page)).answers[qid]);
+ fs.mkdirSync(out,{recursive:true});fs.writeFileSync(path.join(out,'before-fix-reproduction.json'),JSON.stringify({reproduced:true,scope:'synthetic durable account answer + empty cloud/queue',answer_erased_on_startup:true,answered_question_reentered_unseen:true},null,2));console.log('REPRODUCED: startup replaced durable answered record with empty cloud snapshot.');await orphan.context.close();return;
+}
+assert.equal(await orphan.page.locator(`[data-id="${qid}"]`).count(),0);assert.equal((await storage(orphan.page)).notes['fixture-essay'].text,'保留合成草稿');assert((await storage(orphan.page)).legacyRecords.unknown.kept);assert.equal((await storage(orphan.page)).answers[qid].firstCorrect,false);
+for(let i=0;i<100&&!orphanServer.state.answers[qid];i++)await orphan.page.waitForTimeout(50);assert.equal(orphanServer.state.answers[qid].attempts,1);await orphan.page.reload();await orphan.page.waitForSelector('[data-choice]');await filter(orphan.page);assert.equal(await orphan.page.locator(`[data-id="${qid}"]`).count(),0);assert.equal(orphanServer.state.answers[qid].attempts,1);results.push('orphan durable record retained, queued once, refresh idempotent; notes/history retained');assert.deepEqual(orphan.errors,[]);await orphan.context.close();
+// Unchanged old local data must not overwrite a newer authoritative cloud answer.
+const cloudServer=remote();cloudServer.state.answers[qid]={correct:true,firstCorrect:false,attempts:2,selected:[0],time:'2026-10-03T01:00:00Z'};
+const cloud=await device(cloudServer,{seed});assert.equal((await storage(cloud.page)).answers[qid].attempts,2);assert.equal((await storage(cloud.page)).answers[qid].correct,true);assert.equal((await cloud.page.evaluate(()=>window.PsychSync.getStatus())).pending,0);assert.deepEqual(cloud.errors,[]);await cloud.context.close();results.push('unchanged stale local answer cannot overwrite newer cloud record');
+// Delay a previously captured restore reply until after a new submitted answer and its pending queue.
+const raceServer=remote();raceServer.offline=true;const race=await device(raceServer,{delay:1900});await race.page.locator(`[data-choice="${qid}"][data-index="0"]`).click();await race.page.locator(`[data-submit="${qid}"]`).click();await race.page.waitForTimeout(2200);assert((await storage(race.page)).answers[qid]);await filter(race.page);assert.equal(await race.page.locator(`[data-id="${qid}"]`).count(),0);results.push('late account restore cannot overwrite newly submitted answer');
+await race.page.reload();await race.page.waitForSelector('[data-choice]');await race.page.waitForTimeout(2100);await filter(race.page);assert.equal(await race.page.locator(`[data-id="${qid}"]`).count(),0);assert((await storage(race.page)).answers[qid]);results.push('failed sync and offline queue survive browser refresh');raceServer.offline=false;await race.page.evaluate(()=>window.PsychSync.sync(JSON.parse(localStorage.getItem('psychology-learning-v2-user-10000000-0000-4000-8000-000000000001'))));assert.equal(raceServer.state.answers[qid].attempts,1);
+const beforeReadonly=await race.page.evaluate(key=>({record:localStorage.getItem(key),backup:localStorage.getItem(key+':before-cloud-backup')}),accountKey);const readonly=await race.context.newPage();await readonly.goto(base+'/#memory');await readonly.waitForSelector('[data-choice]');assert.equal((await readonly.evaluate(()=>window.PsychSync.getStatus())).readOnly,true);const afterReadonly=await readonly.evaluate(key=>({record:localStorage.getItem(key),backup:localStorage.getItem(key+':before-cloud-backup')}),accountKey);assert.deepEqual(afterReadonly,beforeReadonly);assert.equal(await readonly.locator(`[data-submit="${qid}"]`).first().isDisabled(),true);await readonly.close();results.push('second read-only window cannot rewrite account record or recovery backup');
+const other=await device(raceServer);await filter(other.page);assert.equal(await other.page.locator(`[data-id="${qid}"]`).count(),0);results.push('independent device receives confirmed cloud record');assert.deepEqual(other.errors,[]);await other.context.close();
+await race.page.locator('#practice').selectOption('all');await race.page.locator('#search').fill(pendingId);await race.page.locator(`[data-choice="${pendingId}"][data-index="0"]`).click();await race.page.locator(`[data-submit="${pendingId}"]`).click();assert(!(await storage(race.page)).answers[pendingId]);await filter(race.page,pendingId);assert.equal(await race.page.locator(`[data-id="${pendingId}"]`).count(),1);results.push('tentative answer viewing remains unpracticed under existing contract');
+await race.page.evaluate(()=>window.reloadPrivateStudy({preferLatest:true}));await filter(race.page);assert.equal(await race.page.locator(`[data-id="${qid}"]`).count(),0);results.push('content reload preserves stable-ID practice state');assert.equal(await race.page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);assert.deepEqual(race.errors,[]);fs.mkdirSync(out,{recursive:true});await race.page.screenshot({path:path.join(out,'mobile-unseen-after-refresh.png'),fullPage:false});await race.context.close();
+fs.writeFileSync(path.join(out,'result.json'),JSON.stringify({passed:true,real_production_app_and_sync_modules:true,mocked_transport_only:true,real_owner_or_phone:false,viewport:{width:390,height:844},checks:results},null,2));console.log('PASS: durable account records, restore race, offline/failed sync refresh, cloud device restore, stable IDs and pending-answer contract.');
+}finally{if(browser)await browser.close();await new Promise(r=>server.close(r))}})().catch(e=>{console.error(e);process.exitCode=1});
