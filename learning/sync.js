@@ -294,13 +294,45 @@
     return {reply,manifest:subjectManifest(reply,subject,key)};
   }
   async function getPrivateContentManifest(key){await initialize();if(!status.authenticated)throw Error('请先登录并通过本人允许名单。');if(!contentKeys.includes(key))throw Error('不支持的内容类型。');const pack=await findSubjectPackage(key);if(pack)return pack.manifest;return validateManifest(await request('/rest/v1/rpc/study_get_content_manifest',{p_key:key},true),key)}
-  async function readSubjectComponent(found,key,progress,guard,validatePayload){
-    const m=window.SubjectPackage.validateManifest(JSON.parse(found.reply.manifest_text)),objects=m.objects.filter(o=>o.component===packageComponent(key)),parsed=new Map();let next=0,received=0,failure=null;
-    progress({phase:'download',received,total:objects.length,bytes:found.manifest.byte_count,manifest:found.manifest});
-    async function worker(){while(!failure&&next<objects.length){const o=objects[next++];try{guard();const r=await request('/rest/v1/rpc/study_get_subject_object',{p_package:found.reply.package_id,p_index:o.index},true);guard();if(r.index!==o.index||r.sha256!==o.sha256||typeof r.base64!=='string')throw Error('科目对象响应无效。');const body=Uint8Array.from(atob(r.base64),c=>c.charCodeAt(0));if(body.length!==o.bytes||await window.SubjectPackage.hash(body)!==o.sha256)throw Error('科目对象SHA或长度不符。');parsed.set(o.index,window.SubjectPackage.parseObject(o,body));received++;progress({phase:'download',received,total:objects.length,manifest:found.manifest})}catch(error){failure=failure||error}}}
-    await Promise.all(Array.from({length:Math.min(4,objects.length)},worker));if(failure)throw failure;guard();
-    const value=await window.SubjectPackage.materialize({manifest:m,parsed},packageComponent(key));if(typeof validatePayload==='function')await validatePayload(value);guard();
-    progress({phase:'complete',received,total:objects.length,bytes:found.manifest.byte_count,manifest:found.manifest,cacheStored:false,cacheHit:false});return value;
+  const packageCacheKey=(subject,component,index)=>'package:'+subject+':'+component+(index===undefined?'':':'+index);
+  async function cachePackageSelected(owner,subject){return cacheTransaction(owner,'readonly',(tx,set)=>{
+    const selected=tx.objectStore('selected').get('package:'+subject);selected.onsuccess=()=>{const sha=selected.result?.sha256;if(!sha){set(null);return}const entry=tx.objectStore('entries').get(cacheIdentity(packageCacheKey(subject,'bank'),sha));entry.onsuccess=()=>set(entry.result||null)};
+  })}
+  async function cachedPackageFound(entry,owner,subject,key){
+    if(!entry||entry.kind!=='package-component'||entry.owner!==owner||entry.subject!==subject||entry.component!=='bank'||entry.sha256!==entry.reply?.sha256||typeof entry.reply?.manifest_text!=='string'||await window.SubjectPackage.hash(new TextEncoder().encode(entry.reply.manifest_text))!==entry.sha256)throw Error('本机科目版本索引校验失败；请检查版本后手动切换。');
+    return {reply:entry.reply,manifest:subjectManifest(entry.reply,subject,key)};
+  }
+  async function cachePackageObject(owner,subject,sha,o){return cacheTransaction(owner,'readonly',(tx,set)=>{
+    const req=tx.objectStore('entries').get(cacheIdentity(packageCacheKey(subject,o.component,o.index),sha));req.onsuccess=()=>set(req.result||null);
+  })}
+  async function cachePackageWriteObject(owner,subject,sha,o,body,readEpoch){
+    if(readEpoch!==epoch||owner!==cacheOwner())return false;
+    return cacheTransaction(owner,'readwrite',(tx,set)=>{if(readEpoch!==epoch||owner!==cacheOwner()){tx.abort();return}tx.objectStore('entries').put({id:cacheIdentity(packageCacheKey(subject,o.component,o.index),sha),kind:'package-object',owner,subject,package_sha256:sha,index:o.index,component:o.component,object_sha256:o.sha256,body});set(true)});
+  }
+  async function cachePackageFinish(owner,found,component,readEpoch,select){
+    if(readEpoch!==epoch||owner!==cacheOwner())return false;
+    return cacheTransaction(owner,'readwrite',(tx,set)=>{if(readEpoch!==epoch||owner!==cacheOwner()){tx.abort();return}tx.objectStore('entries').put({id:cacheIdentity(packageCacheKey(found.manifest.subject,component),found.manifest.sha256),kind:'package-component',owner,subject:found.manifest.subject,component,sha256:found.manifest.sha256,reply:clone(found.reply),verified_at:Date.now()});if(select&&component==='bank')tx.objectStore('selected').put({key:'package:'+found.manifest.subject,sha256:found.manifest.sha256});set(true)});
+  }
+  async function readSubjectComponent(found,key,progress,guard,validatePayload,{owner,readEpoch,cacheEnabled=false}={}){
+    const m=window.SubjectPackage.validateManifest(JSON.parse(found.reply.manifest_text)),component=packageComponent(key),objects=m.objects.filter(o=>o.component===component),parsed=new Map(),stored=new Set();let next=0,received=0,failure=null,cached=0,downloaded=0,networkBytes=0,cacheReadable=cacheEnabled&&!!window.indexedDB,cacheWritable=cacheReadable;
+    progress({phase:'cache-check',received,total:objects.length,bytes:found.manifest.byte_count,manifest:found.manifest});
+    async function worker(){while(!failure&&next<objects.length){const o=objects[next++];try{guard();let body=null;
+      if(cacheReadable){let entry=null;try{entry=await cachePackageObject(owner,m.subject,found.manifest.sha256,o)}catch{guard();cacheReadable=false}guard();if(entry)try{if(entry.kind!=='package-object'||entry.owner!==owner||entry.subject!==m.subject||entry.component!==component||entry.package_sha256!==found.manifest.sha256||entry.index!==o.index||entry.object_sha256!==o.sha256||!(entry.body instanceof Uint8Array)||entry.body.length!==o.bytes||await window.SubjectPackage.hash(entry.body)!==o.sha256)throw Error('科目对象缓存校验失败');body=entry.body;cached++;stored.add(o.index)}catch{guard();body=null}}
+      if(!body){const r=await request('/rest/v1/rpc/study_get_subject_object',{p_package:found.reply.package_id,p_index:o.index},true);guard();if(r.index!==o.index||r.sha256!==o.sha256||typeof r.base64!=='string')throw Error('科目对象响应无效。');body=Uint8Array.from(atob(r.base64),c=>c.charCodeAt(0));if(body.length!==o.bytes||await window.SubjectPackage.hash(body)!==o.sha256)throw Error('科目对象SHA或长度不符。');downloaded++;networkBytes+=body.length;}
+      parsed.set(o.index,window.SubjectPackage.parseObject(o,body));
+      if(cacheWritable&&!stored.has(o.index))try{if(await cachePackageWriteObject(owner,m.subject,found.manifest.sha256,o,body,readEpoch))stored.add(o.index);else cacheWritable=false}catch{guard();cacheWritable=false}
+      received++;progress({phase:downloaded?'download':'cache',received,total:objects.length,manifest:found.manifest,cachedObjects:cached,downloadedObjects:downloaded,networkBytes});
+    }catch(error){failure=failure||error}}}
+    await Promise.all(Array.from({length:Math.min(4,objects.length)},worker));if(failure)throw failure;guard();progress({phase:'verify',received,total:objects.length,manifest:found.manifest,cachedObjects:cached,downloadedObjects:downloaded,networkBytes});
+    const value=await window.SubjectPackage.materialize({manifest:m,parsed},component);if(typeof validatePayload==='function')await validatePayload(value);guard();
+    let cacheStored=false;if(cacheEnabled&&stored.size===objects.length)try{cacheStored=await cachePackageFinish(owner,found,component,readEpoch,true)}catch{guard()}
+    const cacheWarning=cacheEnabled&&!cacheStored?'浏览器未能完整保存本科缓存（空间不足或存储受限）；当前校验内容仍可用，旧缓存版本保留。':'';
+    progress({phase:'complete',received,total:objects.length,bytes:found.manifest.byte_count,manifest:found.manifest,cacheStored,cacheHit:downloaded===0,cachedObjects:cached,downloadedObjects:downloaded,networkBytes,cacheWarning});return value;
+  }
+  async function stageImportedBankCache(pack,found,owner,readEpoch,guard){
+    if(!window.indexedDB)return false;const objects=pack.manifest.objects.filter(o=>o.component==='bank');let next=0,failed=false;
+    async function worker(){while(!failed&&next<objects.length){const o=objects[next++];try{guard();const body=pack.entries.get(o.path);if(!body||body.length!==o.bytes||await window.SubjectPackage.hash(body)!==o.sha256||!await cachePackageWriteObject(owner,pack.manifest.subject,pack.manifestSHA,o,body,readEpoch))failed=true}catch{failed=true}}}
+    await Promise.all(Array.from({length:Math.min(4,objects.length)},worker));guard();if(failed)return false;try{return await cachePackageFinish(owner,found,'bank',readEpoch,false)}catch{guard();return false}
   }
   async function setSubjectPackage(pack,onProgress=()=>{}){
     await initialize();const stamp=epoch,owner=cacheOwner(),guard=()=>{if(stamp!==epoch||owner!==cacheOwner()||!status.authenticated||status.readOnly)throw Error('账户已切换或不可写，完整包导入取消。')};guard();
@@ -319,7 +351,7 @@
     const documents=await window.SubjectPackage.materialize(pack,'documents');guard();for(const doc of documents.documents){onProgress({phase:'files',received:received.size,total:m.objects.length,message:'正在核验原始Word完整SHA'});const r=await packageRequest('files','/rest/v1/rpc/study_verify_subject_asset',{p_package:upload.package_id,p_field:doc.asset_field});guard();if(r.verified!==true||r.field!==doc.asset_field||r.sha256!==doc.sha256)throw Error('服务端未确认原始文件完整SHA。');}
     guard();onProgress({phase:'commit',received:received.size,total:m.objects.length});let result;
     try{result=await packageRequest('commit','/rest/v1/rpc/study_commit_subject_package',{p_package:upload.package_id})}catch(error){guard();if(['40001','22023','42501'].includes(error.code)||[401,403].includes(error.status))throw error;let current;try{current=await packageRequest('confirm','/rest/v1/rpc/study_get_subject_package',{p_subject:m.subject})}catch(confirmError){const uncertain=Error('提交结果未确认；保留当前界面，请联网核对本科版本。 '+error.message+' 结果核对：'+confirmError.message);uncertain.commitUncertain=true;throw uncertain}if(current.sha256!==sha)throw error;result={saved:true,subject:m.subject,sha256:sha,updated_at:current.updated_at}}
-    guard();if(result.saved!==true||result.subject!==m.subject||result.sha256!==sha)throw Error('服务端未确认本科原子激活。');try{localStorage.removeItem(intentKey)}catch{}return {...result,requiresManualReload:true};
+    guard();if(result.saved!==true||result.subject!==m.subject||result.sha256!==sha)throw Error('服务端未确认本科原子激活。');const reply={package_id:upload.package_id,sha256:sha,manifest_text:pack.manifestText,updated_at:result.updated_at},found={reply,manifest:subjectManifest(reply,m.subject,m.subject)},cacheStored=await stageImportedBankCache(pack,found,owner,stamp,guard);guard();try{localStorage.removeItem(intentKey)}catch{}return {...result,cacheStored,requiresManualReload:true};
   }
 
   async function getPrivateContent(key,onProgress=()=>{},options={}){
@@ -334,7 +366,11 @@
     guard();
     const progress=value=>{if(readEpoch!==epoch)throw Error('账户会话已切换，此内容不会应用到新账户。');onProgress(value)};
     progress({phase:'manifest',received:0,total:0});
-    const availablePackage=await findSubjectPackage(key);guard();const pinKey=owner+':'+packageSubject(key),selectedPackage=selectedSubjectPackages.get(pinKey),subjectPackage=options.preferLatest===true?availablePackage:(selectedPackage||availablePackage);if(subjectPackage){const packageProgress=p=>progress({...p,availableManifest:availablePackage?.manifest,updateAvailable:availablePackage?.manifest.sha256!==subjectPackage.manifest.sha256});const value=await readSubjectComponent(subjectPackage,key,packageProgress,guard,validatePayload);guard();if(packageComponent(key)==='bank')selectedSubjectPackages.set(pinKey,subjectPackage);return value;}
+    const availablePackage=await findSubjectPackage(key);guard();const subject=packageSubject(key),pinKey=owner+':'+subject;let selectedPackage=selectedSubjectPackages.get(pinKey);
+    const subjectCacheEnabled=options.cacheMode!=='bypass';
+    if(!selectedPackage&&subjectCacheEnabled&&options.preferLatest!==true&&window.indexedDB){let entry=null;try{entry=await cachePackageSelected(owner,subject)}catch{guard()}guard();if(entry)selectedPackage=await cachedPackageFound(entry,owner,subject,key);guard()}
+    const selected=options.preferLatest===true?availablePackage:(selectedPackage||availablePackage),subjectPackage=selected?{reply:selected.reply,manifest:subjectManifest(selected.reply,subject,key)}:null;
+    if(subjectPackage){const packageProgress=p=>progress({...p,availableManifest:availablePackage?.manifest,updateAvailable:availablePackage?.manifest.sha256!==subjectPackage.manifest.sha256});const value=await readSubjectComponent(subjectPackage,key,packageProgress,guard,validatePayload,{owner,readEpoch,cacheEnabled:subjectCacheEnabled});guard();if(packageComponent(key)==='bank')selectedSubjectPackages.set(pinKey,subjectPackage);return value;}
     let manifest;
     try{manifest=await request('/rest/v1/rpc/study_get_content_manifest',{p_key:key},true)}
     catch(error){if(['P0002','PGRST202'].includes(error.code)){progress({phase:'legacy',received:0,total:0});const value=await request('/rest/v1/rpc/study_get_private_content',{p_key:key},true);guard();if(cacheEnabled)await validatePayload(value);guard();progress({phase:'complete',received:1,total:1});return value}throw error}
