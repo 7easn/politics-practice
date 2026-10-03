@@ -249,7 +249,7 @@
     return new Promise(resolve=>{let done=false;const finish=ok=>{if(!done){done=true;clearTimeout(timer);resolve(ok)}};const timer=setTimeout(()=>finish(false),2500);try{const req=window.indexedDB.deleteDatabase(CACHE_PREFIX+owner);req.onsuccess=()=>finish(true);req.onerror=()=>finish(false);req.onblocked=()=>{/* wait for versionchange/short-lived connections */}}catch{finish(false)}});
   }
   async function dropSession(message='已退出 · 离线记录按账户隔离保留在本机'){
-    const owner=cacheOwner();epoch++;controller.abort();controller=new AbortController();activeSync=null;
+    const owner=cacheOwner();selectedSubjectPackages.clear();epoch++;controller.abort();controller=new AbortController();activeSync=null;
     if(session&&config)localStorage.removeItem(sessionKey());if(releaseWriter)releaseWriter();
     session=null;box=null;publish({authenticated:false,readOnly:false,user_id:null,email:null,pending:0,conflict:false,accessWarning:null,message});
     const cleared=await cachePurge(owner);if(!cleared)publish({cacheCleanupWarning:'题库缓存清理未获浏览器确认，请关闭其他学习窗口后清除此站点的存储；学习记录未删除。'});
@@ -271,7 +271,50 @@
   function validateManifest(manifest,key){
     if(!manifest||!Number.isInteger(manifest.chunk_count)||manifest.chunk_count<1||manifest.chunk_count>512||!Number.isInteger(manifest.byte_count)||manifest.byte_count<2||manifest.byte_count>33554432||!/^[a-f0-9]{64}$/.test(manifest.sha256)||typeof manifest.upload_id!=='string'||(manifest.document_key&&manifest.document_key!==key))throw Error('服务端内容清单无效。');return manifest;
   }
-  async function getPrivateContentManifest(key){await initialize();if(!status.authenticated)throw Error('请先登录并通过本人允许名单。');if(!contentKeys.includes(key))throw Error('不支持的内容类型。');return validateManifest(await request('/rest/v1/rpc/study_get_content_manifest',{p_key:key},true),key)}
+  const selectedSubjectPackages=new Map();
+  function packageComponent(key){return key==='notes'||key==='documents'?key:'bank'}
+  function packageSubject(key){return key==='notes'||key==='documents'?'psychology':key}
+  function subjectManifest(reply,subject,key){
+    if(!reply||typeof reply.manifest_text!=='string'||typeof reply.package_id!=='string'||!/^[a-f0-9]{64}$/.test(reply.sha256))throw Error('服务端科目包清单无效。');
+    const manifest=window.SubjectPackage.validateManifest(JSON.parse(reply.manifest_text));if(manifest.subject!==subject)throw Error('服务端科目不匹配。');
+    const objects=manifest.objects.filter(o=>o.component===packageComponent(key));
+    return {format:'private-subject-package',document_key:key,upload_id:reply.package_id,sha256:reply.sha256,byte_count:objects.reduce((n,o)=>n+o.bytes,0),chunk_count:objects.length,updated_at:reply.updated_at,subject,package_version:manifest.package_version};
+  }
+  async function findSubjectPackage(key){
+    if(!window.SubjectPackage)return null;
+    const subject=packageSubject(key);let reply;
+    try{reply=await request('/rest/v1/rpc/study_get_subject_package',{p_subject:subject},true)}catch(error){if(error.code==='PGRST202'||error.code==='P0002')return null;throw error}
+    if(reply.available===false)return null;
+    if(await window.SubjectPackage.hash(new TextEncoder().encode(reply.manifest_text))!==reply.sha256)throw Error('科目包清单SHA不符。');
+    return {reply,manifest:subjectManifest(reply,subject,key)};
+  }
+  async function getPrivateContentManifest(key){await initialize();if(!status.authenticated)throw Error('请先登录并通过本人允许名单。');if(!contentKeys.includes(key))throw Error('不支持的内容类型。');const pack=await findSubjectPackage(key);if(pack)return pack.manifest;return validateManifest(await request('/rest/v1/rpc/study_get_content_manifest',{p_key:key},true),key)}
+  async function readSubjectComponent(found,key,progress,guard,validatePayload){
+    const m=window.SubjectPackage.validateManifest(JSON.parse(found.reply.manifest_text)),objects=m.objects.filter(o=>o.component===packageComponent(key)),parsed=new Map();let next=0,received=0,failure=null;
+    progress({phase:'download',received,total:objects.length,bytes:found.manifest.byte_count,manifest:found.manifest});
+    async function worker(){while(!failure&&next<objects.length){const o=objects[next++];try{guard();const r=await request('/rest/v1/rpc/study_get_subject_object',{p_package:found.reply.package_id,p_index:o.index},true);guard();if(r.index!==o.index||r.sha256!==o.sha256||typeof r.base64!=='string')throw Error('科目对象响应无效。');const body=Uint8Array.from(atob(r.base64),c=>c.charCodeAt(0));if(body.length!==o.bytes||await window.SubjectPackage.hash(body)!==o.sha256)throw Error('科目对象SHA或长度不符。');parsed.set(o.index,window.SubjectPackage.parseObject(o,body));received++;progress({phase:'download',received,total:objects.length,manifest:found.manifest})}catch(error){failure=failure||error}}}
+    await Promise.all(Array.from({length:Math.min(4,objects.length)},worker));if(failure)throw failure;guard();
+    const value=await window.SubjectPackage.materialize({manifest:m,parsed},packageComponent(key));if(typeof validatePayload==='function')await validatePayload(value);guard();
+    progress({phase:'complete',received,total:objects.length,bytes:found.manifest.byte_count,manifest:found.manifest,cacheStored:false,cacheHit:false});return value;
+  }
+  async function setSubjectPackage(pack,onProgress=()=>{}){
+    await initialize();const stamp=epoch,owner=cacheOwner(),guard=()=>{if(stamp!==epoch||owner!==cacheOwner()||!status.authenticated||status.readOnly)throw Error('账户已切换或不可写，完整包导入取消。')};guard();
+    if(!window.SubjectPackage||!pack?.entries)throw Error('请选择完整科目包。');const m=window.SubjectPackage.validateManifest(pack.manifest),sha=await window.SubjectPackage.hash(new TextEncoder().encode(pack.manifestText));if(sha!==pack.manifestSHA)throw Error('本机清单已变化。');guard();
+    let active;try{active=await request('/rest/v1/rpc/study_get_subject_package',{p_subject:m.subject},true)}catch(error){if(error.code==='PGRST202')throw Error('完整包服务尚未安装；没有调用旧全量提交接口。');throw error}guard();
+    const intentKey='psychology-package-intent-v1:'+owner+':'+m.subject+':'+sha;
+    if(active.sha256===sha){try{localStorage.removeItem(intentKey)}catch{}return {saved:true,subject:m.subject,sha256:sha,already_active:true};}
+    if(typeof active.baseline!=='string')throw Error('服务端未确认本科基线。');
+    let intent;try{const saved=localStorage.getItem(intentKey);intent=saved?JSON.parse(saved):{baseline:active.baseline};if(typeof intent.baseline!=='string')throw Error('恢复标记无效');if(intent.baseline!==active.baseline){const changed=Error('开始上传后云端本科版本已改变；请核对当前版本并取得新的完整包。本次没有覆盖它。');changed.code='40001';throw changed}localStorage.setItem(intentKey,JSON.stringify(intent));}catch(error){if(error.code==='40001')throw error;throw Error('无法保存导入恢复标记；尚未上传或激活，请保留文件并检查本机存储。')}
+    const upload=await request('/rest/v1/rpc/study_begin_subject_package',{p_manifest:pack.manifestText,p_expected_baseline:intent.baseline},true);guard();if(upload.sha256!==sha||typeof upload.package_id!=='string')throw Error('服务端未确认完整包草稿。');const received=new Set(upload.received||[]);
+    for(const o of m.objects){if(received.has(o.index))continue;guard();const bytes=pack.entries.get(o.path);if(!bytes||bytes.length!==o.bytes||await window.SubjectPackage.hash(bytes)!==o.sha256)throw Error('本机对象已变化。');let base64='';for(let i=0;i<bytes.length;i+=24576)base64+=btoa(String.fromCharCode(...bytes.subarray(i,i+24576)));
+      const r=await request('/rest/v1/rpc/study_put_subject_object',{p_package:upload.package_id,p_index:o.index,p_base64:base64},true);guard();if(r.received!==true||r.index!==o.index||r.sha256!==o.sha256)throw Error('服务端未确认科目对象。');received.add(o.index);onProgress({phase:'upload',received:received.size,total:m.objects.length});
+    }
+    const documents=await window.SubjectPackage.materialize(pack,'documents');guard();for(const doc of documents.documents){onProgress({phase:'files',received:received.size,total:m.objects.length,message:'正在核验原始Word完整SHA'});const r=await request('/rest/v1/rpc/study_verify_subject_asset',{p_package:upload.package_id,p_field:doc.asset_field},true);guard();if(r.verified!==true||r.field!==doc.asset_field||r.sha256!==doc.sha256)throw Error('服务端未确认原始文件完整SHA。');}
+    guard();onProgress({phase:'commit',received:received.size,total:m.objects.length});let result;
+    try{result=await request('/rest/v1/rpc/study_commit_subject_package',{p_package:upload.package_id},true)}catch(error){guard();if(['40001','22023','42501'].includes(error.code)||[401,403].includes(error.status))throw error;let current;try{current=await request('/rest/v1/rpc/study_get_subject_package',{p_subject:m.subject},true)}catch{const uncertain=Error('提交结果未确认；保留当前界面，请联网核对本科版本。');uncertain.commitUncertain=true;throw uncertain}if(current.sha256!==sha)throw error;result={saved:true,subject:m.subject,sha256:sha,updated_at:current.updated_at}}
+    guard();if(result.saved!==true||result.subject!==m.subject||result.sha256!==sha)throw Error('服务端未确认本科原子激活。');try{localStorage.removeItem(intentKey)}catch{}return {...result,requiresManualReload:true};
+  }
+
   async function getPrivateContent(key,onProgress=()=>{},options={}){
     const readEpoch=epoch;
     await initialize();
@@ -284,6 +327,7 @@
     guard();
     const progress=value=>{if(readEpoch!==epoch)throw Error('账户会话已切换，此内容不会应用到新账户。');onProgress(value)};
     progress({phase:'manifest',received:0,total:0});
+    const availablePackage=await findSubjectPackage(key);guard();const pinKey=owner+':'+packageSubject(key),selectedPackage=selectedSubjectPackages.get(pinKey),subjectPackage=options.preferLatest===true?availablePackage:(selectedPackage||availablePackage);if(subjectPackage){const packageProgress=p=>progress({...p,availableManifest:availablePackage?.manifest,updateAvailable:availablePackage?.manifest.sha256!==subjectPackage.manifest.sha256});const value=await readSubjectComponent(subjectPackage,key,packageProgress,guard,validatePayload);guard();if(packageComponent(key)==='bank')selectedSubjectPackages.set(pinKey,subjectPackage);return value;}
     let manifest;
     try{manifest=await request('/rest/v1/rpc/study_get_content_manifest',{p_key:key},true)}
     catch(error){if(['P0002','PGRST202'].includes(error.code)){progress({phase:'legacy',received:0,total:0});const value=await request('/rest/v1/rpc/study_get_private_content',{p_key:key},true);guard();if(cacheEnabled)await validatePayload(value);guard();progress({phase:'complete',received:1,total:1});return value}throw error}
@@ -317,6 +361,7 @@
     await initialize();
     if(!status.authenticated||status.readOnly)throw Error('请在本人已授权的主窗口导入内容。');
     if(!contentKeys.includes(key)||!payload||typeof payload!=='object'||Array.isArray(payload))throw Error('不支持的内容类型。');
+    if(await findSubjectPackage(key))throw Error('本科已采用完整包，请导入新版本完整包；未写入旧单文件。');
     const text=JSON.stringify(payload),bytes=new TextEncoder().encode(text).byteLength;
     if(bytes>33554432)throw Error('内容超过32 MB限制。');
     const chunks=contentChunks(text),hash=await contentHash(text);
@@ -341,6 +386,7 @@
     SubjectiveOnlyMerge.validateTransport(transport);
     let baselineManifest=null;
     const base=await getPrivateContent('psychology',p=>{guard();if(p.phase==='complete')baselineManifest=p.manifest;onProgress({...p,phase:'baseline'})},{cacheMode:'bypass',preferLatest:true});guard();
+    if(baselineManifest?.format==='private-subject-package')throw Error('当前科目采用完整包，请取得新版本科完整包；没有调用旧主观提交接口。');
     if(!baselineManifest)throw Error('当前账户缺少分片基线清单；请先导入完整题库，不能用主观文件替代。');
     await options.validatePayload(base);guard();
     const transportSHA=await contentHash(JSON.stringify(transport));
@@ -397,7 +443,7 @@
     }else checks.push({check:'本人账户服务端读取',passed:false,detail:'请先由本人在此浏览器登录；本检查不发送邮件'});
     return checks;
   }
-  window.PsychSync={configure,signIn,signInPassword,signOut,sync,stageLocal,resolveConflict,getPrivateContent,getPrivateContentManifest,setPrivateContent,updateSubjectiveContent,checkAccess,
+  window.PsychSync={configure,signIn,signInPassword,signOut,sync,stageLocal,resolveConflict,getPrivateContent,getPrivateContentManifest,setPrivateContent,setSubjectPackage,updateSubjectiveContent,checkAccess,
     selfCheck,
     async getStatus(){await initialize();return {...status}},
     async getAccountState(){await initialize();return box?clone(box.pending.length?box.localSeen:box.remote):null},

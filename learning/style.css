@@ -19,3 +19,5 @@ aside,main,.card,.annual>div,.option{min-width:0}.option{overflow-wrap:anywhere}
 .v13-answer-point .answer-point-label,.v13-answer-point .answer-point-text,.v13-answer-point .answer-point-marks{display:block}.v13-answer-point .answer-point-text,.v13-outline li,.v13-cautions li,.v13-extension-content{white-space:pre-wrap;overflow-wrap:anywhere}.v13-answer-point .answer-point-marks{font-size:.82rem;color:var(--muted);margin-top:6px}.v13-cautions{padding:14px;border:1px solid #d7ad64;background:#fff9ed;border-radius:10px;margin:16px 0}.v13-extension{border-top:1px solid var(--line);padding:14px 0}.v13-point-evidence{margin:10px 0}.v13-point-evidence .reference{overflow-wrap:anywhere}
 
 .question-number{max-width:100%;min-width:0;padding:4px 10px;border:1px solid var(--green);border-radius:6px;background:var(--soft);color:var(--ink);font-size:14px;font-weight:700;line-height:1.5;overflow-wrap:anywhere}
+
+.subject-package-import{display:block}.subject-package-import>details{margin:22px 0;padding:16px;border:1px solid var(--line);border-radius:8px}.subject-package-import>details>summary{cursor:pointer;font-weight:600}#subjectPackageStatus{white-space:pre-line}
