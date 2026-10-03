@@ -6,6 +6,8 @@
 
 私有台账格式为 `question-review-index-v1`，records 每条包含 question_id、证据相对路径 artifact、该文件真实 SHA256。证据文件格式为 `independent-question-review-v1`，记录 author、不同的 reviewer、completed=true、completed_at、scope=whole-question，reviews 包含对应题号的一条记录。每条必须 decision=passed，携带实际独立审过的 question_snapshot 与 source_snapshots（按引用来源ID映射完整来源记录）。**不能拿当前未审内容生成快照，并倒签旧审核。** 旧证据只能在实际范围与快照完整对应时，由内容负责人建立明确的证据链；缺失的维度须补审。
 
+既有真实审核可使用 provenance_mode=composed-legacy-reviews 组合：legacy_evidence_chain 每项必须保留实际证据相对路径 artifact、文件SHA256、具体 record_locator、原范围 scope。构建逐项重读原文件并校验SHA，不只信任派生快照。原审核时间和适配时间分别保留，不回填缺失的人工审核时间；窄范围来源、变式或字段补丁仅补相应维度，不替代原整题审核。
+
 每条还须携带 note_snapshots（定位ID对应实际审过的完整段落记录）及 document_sha256（所引用原Word文件名对应实读文件SHA）。正式构建与门槛命令读取当前notes和documents，核对定位、文件对应关系、段落版本，以及Word实际字节的SHA。生成的练习证据仅导出段落哈希与Word哈希，不复制原笔记全文；完整包本机校验同时比对笔记和Word版本。
 
 checks 必须逐项给出 status=passed 和实质性 evidence：prompt、answer、explanation、scoring、variants、note_provenance、source_support、original_claim_limits。选择题评分维度须明确正确项、干扰项、计分限制；主观题须核对当前评分点、分值、子标准及变式答法。未核准原断言可保留在订正/待证台账，审核者须明确它未被偷换为正确答案或已完成覆盖。

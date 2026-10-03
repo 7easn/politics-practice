@@ -64,6 +64,15 @@ class ReleaseGateTests(unittest.TestCase):
     def test_status_only_fails(self):
         self.index['records']=[];report,_=self.run_gate();self.assertFalse(report['passed']);self.assertEqual(report['active_questions'],1)
 
+    def test_legacy_component_chain_is_re_read(self):
+        linked=self.root/'legacy.json';linked.write_text('{"synthetic":"old component"}')
+        self.artifact['provenance_mode']='composed-legacy-reviews'
+        self.artifact['legacy_evidence_chain']=[{'artifact':'legacy.json','sha256':hashlib.sha256(linked.read_bytes()).hexdigest(),
+                                                'scope':'synthetic original whole-question review','record_locator':'$.synthetic'}]
+        self.write_artifact();self.assertTrue(self.run_gate()[0]['passed'])
+        linked.write_text('{"synthetic":"changed"}');self.assertFalse(self.run_gate()[0]['passed'])
+        self.artifact['legacy_evidence_chain']=[];self.write_artifact();self.assertFalse(self.run_gate()[0]['passed'])
+
     def test_limited_review_and_self_review_fail(self):
         for field,value in [('scope','sources-only'),('scope','variants-only'),('reviewer','synthetic-author'),('completed',False)]:
             old=self.artifact[field];self.artifact[field]=value;self.write_artifact()

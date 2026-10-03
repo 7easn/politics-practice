@@ -53,7 +53,7 @@ def validate(bank, index, evidence_root, notes=None, documents=None):
     for s in bank.get('sources', []):
         if s.get('id') in sources: raise ValueError('Duplicate source ID')
         sources[s.get('id')] = s
-    cache = {}
+    cache, chain_hashes = {}, {}
     note_records = {n['id']:n for n in (notes or {}).get('records', [])}
     document_hashes = {d['file_name']:d['sha256'] for d in (documents or {}).get('documents', [])}
     if len(note_records) != len((notes or {}).get('records', [])) or len(document_hashes) != len((documents or {}).get('documents', [])):
@@ -82,6 +82,26 @@ def validate(bank, index, evidence_root, notes=None, documents=None):
                     raw = path.read_bytes(); cache[path] = (hashlib.sha256(raw).hexdigest(), json.loads(raw))
                 artifact_sha, artifact = cache[path]
                 if artifact_sha != r.get('sha256'): raise ValueError('Evidence artifact SHA mismatch')
+                # Legacy composition preserves real component reviews and their dates.
+                # Re-read its provenance too; a copied historical label is not a chain.
+                if artifact.get('provenance_mode') == 'composed-legacy-reviews':
+                    chain = artifact.get('legacy_evidence_chain')
+                    if not isinstance(chain, list) or not chain:
+                        raise ValueError('Legacy composition requires actual component evidence')
+                    for link in chain:
+                        relative_link = link.get('artifact', '')
+                        if not isinstance(relative_link, str) or not relative_link or Path(relative_link).is_absolute():
+                            raise ValueError('Legacy evidence path must be relative')
+                        linked = (root / relative_link).resolve()
+                        if root not in linked.parents or not linked.is_file():
+                            raise ValueError('Legacy evidence escapes root or is unreadable')
+                        if linked not in chain_hashes:
+                            linked_raw = linked.read_bytes()
+                            chain_hashes[linked] = hashlib.sha256(linked_raw).hexdigest()
+                        if chain_hashes[linked] != link.get('sha256'):
+                            raise ValueError('Legacy component evidence SHA mismatch')
+                        if not link.get('scope') or not link.get('record_locator'):
+                            raise ValueError('Legacy component scope and record locator are required')
                 if artifact.get('format') != 'independent-question-review-v1' or artifact.get('scope') != 'whole-question' or artifact.get('completed') is not True:
                     raise ValueError('Source-only, variant-only and technical review do not pass whole-question review')
                 reviewer, author = artifact.get('reviewer'), artifact.get('author')
