@@ -6,11 +6,23 @@ LIMIT = 256 * 1024
 def encoded(value):
     return json.dumps(value, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
 
-def build(subject, version, bank, notes, documents, review, output):
+def build(subject, version, bank, notes, documents, review, output, review_index=None, evidence_root=None):
     if subject not in ('psychology', 'politics', 'english'):
         raise ValueError('Unsupported subject')
     if not isinstance(review, dict) or review.get('status') not in ('incomplete', 'reviewed-with-limitations', 'reviewed') or not isinstance(review.get('scope'), str) or not isinstance(review.get('limitations'), list):
         raise ValueError('Explicit semantic review scope/status/limitations required')
+    # Workbench transport fixtures may remain incomplete. Every formally reviewed
+    # build must re-read actual independent evidence, not trust a saved certificate.
+    if review.get('status') == 'incomplete':
+        bank = {k:v for k,v in bank.items() if k not in ('questionReviews','practiceRelease')}
+    else:
+        from question_release_gate import validate
+        if review_index is None or evidence_root is None:
+            raise ValueError('Formal release requires current whole-question independent evidence index and evidence root')
+        report, proofs = validate(bank, review_index, evidence_root, notes, documents)
+        if not report['passed']:
+            raise ValueError('Whole-question release gate failed: '+json.dumps({k:v for k,v in report.items() if k not in ('failures','bank_sha256')})+'; first failures: '+json.dumps(report['failures'][:5],ensure_ascii=False))
+        bank = dict(bank, questionReviews=proofs, practiceRelease={k:v for k,v in report.items() if k != 'failures'})
     objects, bodies = [], {}
     def add(body, role, component, field='', start=0, count=0):
         if not 0 < len(body) <= LIMIT:
@@ -62,5 +74,6 @@ def build(subject, version, bank, notes, documents, review, output):
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--subject',required=True);p.add_argument('--version',required=True)
     for name in ('bank','notes','documents','review','output'):p.add_argument('--'+name,required=True)
+    p.add_argument('--review-index');p.add_argument('--evidence-root')
     a=p.parse_args();load=lambda n:json.loads(pathlib.Path(getattr(a,n)).read_text())
-    print(json.dumps(build(a.subject,a.version,load('bank'),load('notes'),load('documents'),load('review'),a.output),ensure_ascii=False))
+    print(json.dumps(build(a.subject,a.version,load('bank'),load('notes'),load('documents'),load('review'),a.output,load('review_index') if a.review_index else None,a.evidence_root),ensure_ascii=False))

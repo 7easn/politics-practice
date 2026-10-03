@@ -30,3 +30,4 @@ jobs:
           node scripts/test_subjective_merge.cjs
           node scripts/test_subject_package.cjs
           node scripts/test_subject_package_sync.cjs
+          python3 scripts/test_question_release_gate.py

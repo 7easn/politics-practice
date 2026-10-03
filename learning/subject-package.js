@@ -4,6 +4,35 @@
 const LIMIT=262144,MAX_TOTAL=134217728,encoder=new TextEncoder(),decoder=new TextDecoder('utf-8',{fatal:true});
 const hash=async bytes=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))).map(v=>v.toString(16).padStart(2,'0')).join('');
 const plain=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
+const REVIEW_CHECKS=['prompt','answer','explanation','scoring','variants','note_provenance','source_support','original_claim_limits'];
+function reviewTree(v){
+ if(v===null)return ['null'];if(typeof v==='boolean')return ['boolean',v];if(typeof v==='string')return ['string',v];
+ if(typeof v==='number'){if(!Number.isFinite(v)||Number.isInteger(v)&&!Number.isSafeInteger(v))throw Error('审核绑定数字无效。');const b=new ArrayBuffer(8);new DataView(b).setFloat64(0,v,false);return ['number',Array.from(new Uint8Array(b),n=>n.toString(16).padStart(2,'0')).join('')]}
+ if(Array.isArray(v))return ['array',v.map(reviewTree)];if(plain(v))return ['object',Object.keys(v).sort().map(k=>[k,reviewTree(v[k])])];throw Error('审核绑定包含非JSON字段。');
+}
+const reviewHash=v=>hash(encoder.encode(JSON.stringify(reviewTree(v))));
+const practiceDisabled=q=>q.practice_enabled===false||q.safe_for_quiz===false;
+async function auditQuestionReviews(bank,{notes,documents}={}){
+ const accepted=new WeakSet(),failures=[],questions=[...(bank.memoryQuestions||[]),...(bank.predictions||[])],proofs=new Map(),sources=new Map();
+ for(const s of bank.sources||[]) {if(sources.has(s.id))throw Error('来源ID重复，审核绑定无效。');sources.set(s.id,s)}
+ for(const p of bank.questionReviews||[]){if(!plain(p)||proofs.has(p.id))throw Error('整题审核证据ID无效或重复。');proofs.set(p.id,p)}
+ const sourceHashes=new Map(),noteRecords=new Map((notes?.records||[]).map(n=>[n.id,n])),documentHashes=new Map((documents?.documents||[]).map(d=>[d.file_name,d.sha256]));let active=0,passed=0;
+ for(const q of questions){if(practiceDisabled(q))continue;active++;
+  try{const p=proofs.get(q.id);if(!p||p.binding_algorithm!=='typed-tree-ieee754-v1'||p.scope!=='whole-question'||p.decision!=='passed'||typeof p.author!=='string'||!p.author.trim()||typeof p.reviewer!=='string'||!p.reviewer.trim()||p.author===p.reviewer||typeof p.completed_at!=='string'||!p.completed_at||!/^[a-f0-9]{64}$/.test(p.evidence_artifact_sha256)||!plain(p.checks)||REVIEW_CHECKS.some(k=>!plain(p.checks[k])||p.checks[k].status!=='passed'||typeof p.checks[k].evidence!=='string'||p.checks[k].evidence.trim().length<12))throw Error('缺少完整、独立的逐题审核证据。');
+   const kind=(bank.memoryQuestions||[]).includes(q)?'memoryQuestions':'predictions';if(p.kind!==kind||await reviewHash(q)!==p.question_sha256)throw Error('当前题干、答案、解析或评分版本与审核不符。');
+   const ids=[...new Set([...(q.source_ids||[]),...(q.source_refs||[]).map(r=>r.id).filter(id=>typeof id==='string')])].sort();if(!ids.length||!Array.isArray(q.note_refs)||!q.note_refs.length||!plain(p.source_sha256)||Object.keys(p.source_sha256).sort().join('\n')!==ids.join('\n'))throw Error('来源或笔记定位绑定不完整。');
+   for(const id of ids){if(!sources.has(id))throw Error('当前来源不存在。');if(!sourceHashes.has(id))sourceHashes.set(id,await reviewHash(sources.get(id)));if(p.source_sha256[id]!==sourceHashes.get(id))throw Error('当前来源版本与审核不符。')}
+   const noteIds=[...new Set(q.note_refs.map(r=>String(r.locator||'').replace(/^audit:/,'')))].sort(),fileNames=[...new Set(q.note_refs.map(r=>r.file_name))].sort();
+   if(!plain(p.note_record_sha256)||!plain(p.document_sha256)||Object.keys(p.note_record_sha256).sort().join('\n')!==noteIds.join('\n')||Object.keys(p.document_sha256).sort().join('\n')!==fileNames.join('\n')||Object.values(p.note_record_sha256).concat(Object.values(p.document_sha256)).some(s=>typeof s!=='string'||!/^[a-f0-9]{64}$/.test(s)))throw Error('笔记原文与Word版本绑定不完整。');
+   if(notes)for(const id of noteIds)if(!noteRecords.has(id)||await reviewHash(noteRecords.get(id))!==p.note_record_sha256[id])throw Error('当前笔记原文版本与审核不符。');
+   if(documents)for(const name of fileNames)if(documentHashes.get(name)!==p.document_sha256[name])throw Error('当前原始Word版本与审核不符。');
+   accepted.add(q);passed++;
+  }catch(e){failures.push({id:q.id,reason:e.message})}
+ }
+ for(const id of proofs.keys())if(!questions.some(q=>q.id===id))throw Error('审核证据引用未知题号。');
+ const release=bank.practiceRelease,complete=active>0&&passed===active&&plain(release)&&release.format==='question-release-gate-v1'&&release.passed===true&&release.active_questions===active&&release.current_bound_reviews===passed&&release.disabled_questions===questions.length-active&&/^[a-f0-9]{64}$/.test(release.review_index_sha256);
+ return {accepted:complete?accepted:new WeakSet(),active,passed:complete?passed:0,current_version_bound_candidates:passed,disabled:questions.length-active,failures,complete};
+}
 function validateManifest(m){
  if(!plain(m)||m.format!=='private-subject-package'||m.schema_version!==1||!['psychology','politics','english'].includes(m.subject)||typeof m.package_version!=='string'||!m.package_version||m.package_version.length>160||m.file_complete!==true)throw Error('完整科目包格式或版本不正确。');
  const r=m.semantic_review;if(!plain(r)||!['incomplete','reviewed-with-limitations','reviewed'].includes(r.status)||typeof r.scope!=='string'||!Array.isArray(r.limitations))throw Error('缺少独立的审校范围和限制说明。');
@@ -57,7 +86,9 @@ async function inspect(buffer){
   if(o.component==='bank'&&['memoryQuestions','predictions'].includes(o.field)||o.component==='notes'&&o.field==='records'){const seen=o.component==='bank'?ids:notes;for(const item of value){if(seen.has(item.id))throw Error('跨分片题号或笔记定位重复。');seen.add(item.id)}}
  }
  const pack={manifest,manifestText:decoder.decode(manifestBytes),manifestSHA:await hash(manifestBytes),entries,parsed};
- for(const name of ['bank','notes','documents'])await materialize(pack,name);
+ const components={};for(const name of ['bank','notes','documents'])components[name]=await materialize(pack,name);
+ pack.questionReview=await auditQuestionReviews(components.bank,{notes:components.notes,documents:components.documents});
+ if(manifest.semantic_review.status!=='incomplete'&&!pack.questionReview.complete)throw Error('正式科目包整题审核门槛未通过；不能用审核状态标签替代当前版本证据。');
  return pack;
 }
 async function materialize(pack,component){
@@ -78,5 +109,5 @@ async function materialize(pack,component){
  if(component==='documents'&&m.objects.some(o=>o.role==='asset'&&!assetFields.has(o.field)))throw Error('包内含未声明的原始文件。');
  return result;
 }
-const api={validateManifest,parseObject,inspect,materialize,hash,LIMIT};if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.SubjectPackage=api;
+const api={validateManifest,parseObject,inspect,materialize,hash,reviewHash,auditQuestionReviews,practiceDisabled,LIMIT};if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.SubjectPackage=api;
 })(typeof window==='undefined'?globalThis:window);
