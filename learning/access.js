@@ -12,7 +12,7 @@ async function enter(status){
  el('loginPanel').hidden=true;el('ownerBar').hidden=false;el('privateApp').hidden=false;
  if(!mounted){el('privateApp').innerHTML=window.STUDY_SHELL;const shell=el('privateApp').querySelector('.shell');shell.append(el('managePanel'));el('managerNotesSection').append(el('notesPanel'));window.PrivateContentManager.initialize(api,()=>loggedIn);mounted=true}
  restoreRoute();
- if(!started){started=true;const script=document.createElement('script');script.src='learning/app.js?v=20261003-subject-package-review-v2';document.head.append(script)}
+ if(!started){started=true;await new Promise((resolve,reject)=>{if(window.NativeSubjectiveView)return resolve();const helper=document.createElement('script');helper.src='learning/native-subjective-view.js?v=20261003-native-v14';helper.onload=resolve;helper.onerror=()=>reject(Error('原生题显示组件读取失败，请刷新重试'));document.head.append(helper)}).catch(error=>{started=false;throw error});if(stamp!==generation){started=false;return}const script=document.createElement('script');script.src='learning/app.js?v=20261003-native-v14';document.head.append(script)}
  else if(stamp===generation)await window.reloadPrivateStudy?.();
 }
 api.subscribe(s=>enter(s).catch(e=>{feedback(e.message)}));

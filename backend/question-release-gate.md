@@ -10,6 +10,8 @@
 
 每条还须携带 note_snapshots（定位ID对应实际审过的完整段落记录）及 document_sha256（所引用原Word文件名对应实读文件SHA）。正式构建与门槛命令读取当前notes和documents，核对定位、文件对应关系、段落版本，以及Word实际字节的SHA。生成的练习证据仅导出段落哈希与Word哈希，不复制原笔记全文；完整包本机校验同时比对笔记和Word版本。
 
+笔记外新题、权威来源补充或独立订正题可以保留真实空 note_refs。主观题当前已审对象的 basis_type 可明示 source_supplement、prediction_inference 或 past_exam_authoritative_source_extension；选择题须由真实整题证据行额外明确 note_basis=external-source-only，说明原空锚或旧不合适锚的删除原因以及外源答法依据。两者仍须完整八项独立整题结论、实际外源证据和全部当前版本绑定，空 note_snapshots/document_sha256 与当前空定位集合严格对应。状态标签、空锚或补充标签单独均不能通过，不为满足契约挂错误来源或编造笔记覆盖。公开显示明确无对应笔记原文锚，实际相关订正背景可另行保留，但不自动变成答案依据。
+
 checks 必须逐项给出 status=passed 和实质性 evidence：prompt、answer、explanation、scoring、variants、note_provenance、source_support、original_claim_limits。选择题评分维度须明确正确项、干扰项、计分限制；主观题须核对当前评分点、分值、子标准及变式答法。未核准原断言可保留在订正/待证台账，审核者须明确它未被偷换为正确答案或已完成覆盖。
 
 构建后 questionReviews 数组保留逐题证据来源、独立审核者、八项结论与版本哈希；practiceRelease 保存汇总。绑定算法 typed-tree-ieee754-v1 将JSON递归表示为带类型树：null、boolean、string、array、object（键按UTF16排序）；number 为 IEEE754 大端8字节的十六进制。对该树紧凑UTF8 JSON取SHA256。整题全部字段及完整来源记录参与绑定，不更改原题内容或小数分值。浏览器重新计算题目与来源哈希，任何题干、答案、解析、评分、变式、定位或来源版本变化都使资格失效。该校验验证证据与版本一致性；实际完成独立阅读及判断仍由具名审核者负责，不能用机器校验冒充人工审核。

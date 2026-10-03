@@ -96,6 +96,26 @@ class ReleaseGateTests(unittest.TestCase):
         self.bank['memoryQuestions'].append({'id':'synthetic-navigation','practice_enabled':False,'duplicate_of':self.q['id']})
         report,proofs=self.run_gate();self.assertTrue(report['passed']);self.assertEqual(report['disabled_questions'],1);self.assertEqual(len(proofs),1)
 
+    def test_audited_external_essay_does_not_invent_note_anchors(self):
+        self.bank['memoryQuestions']=[];self.bank['predictions']=[self.q]
+        self.q['basis_type']='source_supplement';self.q['note_refs']=[]
+        row=self.artifact['reviews'][0];row['question_snapshot']=copy.deepcopy(self.q)
+        row['note_snapshots']={};row['document_sha256']={}
+        row['checks']['note_provenance']['evidence']='Explicitly audited external supplement with no corresponding note; no invented anchor or note coverage claim.'
+        self.write_artifact();report,proofs=self.run_gate();self.assertTrue(report['passed'])
+        exported=copy.deepcopy(self.bank);exported['questionReviews']=proofs
+        exported['practiceRelease']={k:v for k,v in report.items() if k!='failures'}
+        fixture=self.root/'external.json';fixture.write_text(json.dumps(exported,ensure_ascii=False))
+        code="globalThis.crypto=require('node:crypto').webcrypto;const a=require('./learning/subject-package.js'),b=JSON.parse(require('fs').readFileSync(process.argv[1]));a.auditQuestionReviews(b).then(r=>console.log(JSON.stringify({complete:r.complete,passed:r.passed})))"
+        actual=json.loads(subprocess.check_output([os.environ.get('NODE_EXECUTABLE','node'),'-e',code,str(fixture)],cwd=Path(__file__).resolve().parents[1]))
+        self.assertEqual(actual,{'complete':True,'passed':1})
+        self.bank['predictions']=[];self.bank['memoryQuestions']=[self.q];self.assertFalse(self.run_gate()[0]['passed'])
+        # MC needs an explicit judgment in genuine evidence, not a basis label alone.
+        row['note_basis']='external-source-only';self.write_artifact();self.assertTrue(self.run_gate()[0]['passed'])
+        del row['note_basis'];self.write_artifact()
+        self.bank['memoryQuestions']=[];self.bank['predictions']=[self.q];del self.q['basis_type']
+        row['question_snapshot']=copy.deepcopy(self.q);self.write_artifact();self.assertFalse(self.run_gate()[0]['passed'])
+
     def test_traversal_and_duplicate_index_fail(self):
         self.index['records'][0]['artifact']='../evidence.json';self.assertFalse(self.run_gate()[0]['passed'])
         self.index['records'].append(copy.deepcopy(self.index['records'][0]))

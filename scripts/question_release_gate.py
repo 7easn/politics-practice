@@ -10,6 +10,7 @@ from pathlib import Path
 
 CHECKS = ('prompt', 'answer', 'explanation', 'scoring', 'variants',
           'note_provenance', 'source_support', 'original_claim_limits')
+EXTERNAL_NOTE_BASES = ('source_supplement', 'prediction_inference', 'past_exam_authoritative_source_extension')
 
 def canonical(value):
     # Tagged tree with IEEE754 numeric bytes avoids Python/JS 1.0 and exponent differences.
@@ -117,7 +118,12 @@ def validate(bank, index, evidence_root, notes=None, documents=None):
                 qsha = digest(q)
                 if digest(row.get('question_snapshot')) != qsha: raise ValueError('Current whole question differs from independently reviewed snapshot')
                 used = source_ids(q)
-                if not used or not q.get('note_refs'): raise ValueError('Current question lacks source or note provenance')
+                refs_notes = q.get('note_refs')
+                # A genuine whole-question reviewer may explicitly certify an
+                # external-source-only question; never invent an anchor to pass.
+                external = row.get('note_basis') == 'external-source-only' or kind == 'predictions' and q.get('basis_type') in EXTERNAL_NOTE_BASES
+                if not used or not isinstance(refs_notes, list) or not refs_notes and not external:
+                    raise ValueError('Current question lacks source or explicit audited external-note provenance')
                 expected_sources = row.get('source_snapshots', {})
                 if set(expected_sources) != set(used): raise ValueError('Reviewed source set differs from current question references')
                 bindings = {}
@@ -142,6 +148,7 @@ def validate(bank, index, evidence_root, notes=None, documents=None):
                                'binding_algorithm': 'typed-tree-ieee754-v1',
                                'reviewer': reviewer, 'author': author, 'completed_at': artifact['completed_at'],
                                'scope': 'whole-question', 'decision': 'passed', 'checks': checks,
+                               'note_basis': row.get('note_basis', 'external-source-only' if external and not refs_notes else 'note-linked'),
                                'evidence_artifact_sha256': artifact_sha, 'evidence_artifact': relative})
             except (ValueError, TypeError, KeyError, OSError) as err:
                 failures.append({'id': qid, 'reason': str(err)})
