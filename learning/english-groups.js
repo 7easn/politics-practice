@@ -7,6 +7,14 @@ const CHECKS=['complete_material','question_order','options_answer_alignment','a
 const groupId=g=>g.id??g.group_id,questionGroup=q=>q.group_id??q.passage_id,kind=g=>kinds[g.type];
 function optionEntries(q){if(Array.isArray(q.options))return q.options.map((text,i)=>[String.fromCharCode(65+i),text]);if(plain(q.options))return Object.entries(q.options);return []}
 function answerIndexes(q){if(Array.isArray(q.answer))return q.answer;if(typeof q.answer==='string'){const labels=q.answer.split(/[\s,]+/).filter(Boolean),entries=optionEntries(q);return labels.map(label=>entries.findIndex(([key])=>key===label))}return []}
+/* Classification changes navigation only; raw reviewed groups and tasks stay immutable. */
+function writingType(bank,g,byQuestion){
+ const raw=g?.raw||g,qid=g?.question_ids?.length===1?g.question_ids[0]:null,q=byQuestion?.get(qid)||[...list(bank?.memoryQuestions),...list(bank?.predictions)].find(q=>q.id===qid),declared=raw?.writing_type??q?.writing_type;
+ if(['small','large','framework'].includes(declared))return declared;
+ const mapped=list(bank?.writingClassification).find(c=>c.group_id===groupId(g));
+ if(['small','large','framework'].includes(mapped?.writing_type)&&(!mapped.module||mapped.module==='writing'))return mapped.writing_type;
+ if(q?.original_number===49||q?.original_number===51)return 'small';if(q?.original_number===52)return 'large';return 'unclassified';
+}
 function validate(bank){
  if(!plain(bank)||!id(bank.version??bank.content_package_version??bank.subject_version)||!Array.isArray(bank.memoryQuestions)||!Array.isArray(bank.predictions)||!Array.isArray(bank.sources))throw Error('英语题库根结构或版本无效。');
  const questions=[...bank.memoryQuestions,...bank.predictions],byQuestion=new Map(),sources=new Map();
@@ -51,5 +59,5 @@ async function audit(bank,questionAudit,packageAPI){
  }catch(e){failures.push({group_id:g.id,reason:e.message})}}
  return {...schema,accepted,failures,complete_groups:accepted.size,total_groups:schema.groups.length};
 }
-const api={validate,audit,optionEntries,answerIndexes,CHECKS,groupId,questionGroup};if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.EnglishGroups=api;
+const api={validate,audit,writingType,optionEntries,answerIndexes,CHECKS,groupId,questionGroup};if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.EnglishGroups=api;
 })(typeof window!=='undefined'?window:globalThis);

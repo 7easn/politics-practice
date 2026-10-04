@@ -38,6 +38,7 @@ jobs:
           node --check learning/subject-trend.js
           node scripts/test_subject_trend.cjs
           node scripts/test_english_modules.cjs
+          node scripts/test_english_frameworks.cjs
           node scripts/test_english_groups.cjs
           node scripts/test_subject_package.cjs
           node scripts/test_subject_package_sync.cjs
@@ -52,3 +53,4 @@ jobs:
           PLAYWRIGHT_MODULE_PATH="$RUNNER_TEMP/psychology-browser-check/node_modules/playwright" node scripts/test_subject_package_browser.cjs
           PLAYWRIGHT_MODULE_PATH="$RUNNER_TEMP/psychology-browser-check/node_modules/playwright" node scripts/test_record_persistence.cjs
           PLAYWRIGHT_MODULE_PATH="$RUNNER_TEMP/psychology-browser-check/node_modules/playwright" node scripts/test_subject_rooms_browser.cjs
+          PLAYWRIGHT_MODULE_PATH="$RUNNER_TEMP/psychology-browser-check/node_modules/playwright" node scripts/test_english_frameworks_browser.cjs
