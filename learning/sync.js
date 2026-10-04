@@ -85,8 +85,15 @@
       message:!writable?'此浏览器已有学习窗口或不支持安全窗口锁 · 当前仅查看；请关闭其他窗口后重载':box.pending.length?'已登录 · 有离线操作待同步':'已登录 · 服务端用户隔离已验证',pending:box.pending.length});
   }
   function queue(kind,target,payload){box.pending.push({id:crypto.randomUUID(),kind,target,payload})}
-  function capture(state){
+  function capture(state,subjectScope=null){
     const next=publicState(state),previous=box.localSeen||empty();
+    // Existing psychology callers retain their original record IDs. English
+    // uses a separate wire namespace; stale other-subject screens cannot undo it.
+    if(!['english','politics'].includes(subjectScope)){
+      for(const id of Object.keys(next.answers))if(/^(english|politics):/.test(id))delete next.answers[id];
+      for(const [id,value] of Object.entries(previous.answers||{}))if(/^(english|politics):/.test(id))next.answers[id]=clone(value);
+      for(const field of ['wrong','favorites'])next[field]=[...new Set([...next[field].filter(id=>!/^(english|politics):/.test(id)),...(previous[field]||[]).filter(id=>/^(english|politics):/.test(id))])];
+    }
     for(const [id,a] of Object.entries(next.answers)){
       if(!a||typeof a.correct!=='boolean'||!Number.isInteger(a.attempts)||a.attempts<1)continue;
       const old=previous.answers[id];
@@ -110,6 +117,16 @@
     capture(state);
     publish({pending:box.pending.length,message:box.pending.length?'已保存至本机 · 待同步 '+box.pending.length+' 项':status.message});
   }
+  function stageSubjectLocal(subject,state){
+    if(!['english','politics'].includes(subject))throw Error('科目不支持独立记录空间。');
+    if(!status.authenticated||!box)throw Error('请先登录并核验本人权限。');
+    if(status.readOnly)throw Error('当前窗口仅查看，本科记录已保留在本机。');
+    const input=publicState(state),previous=box.localSeen||box.remote||empty(),merged=clone(previous),prefix=subject+':';
+    for(const [id,value] of Object.entries(input.answers))merged.answers[prefix+id]=value;
+    for(const field of ['wrong','favorites'])merged[field]=[...new Set([...(previous[field]||[]).filter(id=>!id.startsWith(prefix)),...input[field].map(id=>prefix+id)])];
+    capture(merged,subject);publish({pending:box.pending.length,message:box.pending.length?'已保存至本机 · 待同步 '+box.pending.length+' 项':status.message});
+  }
+  async function syncSubject(subject,state){await initialize();stageSubjectLocal(subject,state);return sync(box.localSeen)}
   function localProjection(remote,operations){
     const value=clone(remote);
     for(const op of operations){
@@ -278,22 +295,22 @@
   }
   const selectedSubjectPackages=new Map();
   function packageComponent(key){return key==='notes'||key==='documents'?key:'bank'}
-  function packageSubject(key){return key==='notes'||key==='documents'?'psychology':key}
+  function packageSubject(key,override){if(override!==undefined&&(!['psychology','politics','english'].includes(override)||!['notes','documents',override].includes(key)))throw Error('科目与资料类型不匹配。');return override||(key==='notes'||key==='documents'?'psychology':key)}
   function subjectManifest(reply,subject,key){
     if(!reply||typeof reply.manifest_text!=='string'||typeof reply.package_id!=='string'||!/^[a-f0-9]{64}$/.test(reply.sha256))throw Error('服务端科目包清单无效。');
     const manifest=window.SubjectPackage.validateManifest(JSON.parse(reply.manifest_text));if(manifest.subject!==subject)throw Error('服务端科目不匹配。');
     const objects=manifest.objects.filter(o=>o.component===packageComponent(key));
     return {format:'private-subject-package',document_key:key,upload_id:reply.package_id,sha256:reply.sha256,byte_count:objects.reduce((n,o)=>n+o.bytes,0),chunk_count:objects.length,updated_at:reply.updated_at,subject,package_version:manifest.package_version};
   }
-  async function findSubjectPackage(key){
+  async function findSubjectPackage(key,subjectOverride){
     if(!window.SubjectPackage)return null;
-    const subject=packageSubject(key);let reply;
+    const subject=packageSubject(key,subjectOverride);let reply;
     try{reply=await request('/rest/v1/rpc/study_get_subject_package',{p_subject:subject},true)}catch(error){if(error.code==='PGRST202'||error.code==='P0002')return null;throw error}
     if(reply.available===false)return null;
     if(await window.SubjectPackage.hash(new TextEncoder().encode(reply.manifest_text))!==reply.sha256)throw Error('科目包清单SHA不符。');
     return {reply,manifest:subjectManifest(reply,subject,key)};
   }
-  async function getPrivateContentManifest(key){await initialize();if(!status.authenticated)throw Error('请先登录并通过本人允许名单。');if(!contentKeys.includes(key))throw Error('不支持的内容类型。');const pack=await findSubjectPackage(key);if(pack)return pack.manifest;return validateManifest(await request('/rest/v1/rpc/study_get_content_manifest',{p_key:key},true),key)}
+  async function getPrivateContentManifest(key,options={}){await initialize();if(!status.authenticated)throw Error('请先登录并通过本人允许名单。');if(!contentKeys.includes(key))throw Error('不支持的内容类型。');const pack=await findSubjectPackage(key,options.subject);if(pack)return pack.manifest;if(options.subject&&options.subject!=='psychology'&&['notes','documents'].includes(key))throw Error('本科尚未导入完整资料包。');return validateManifest(await request('/rest/v1/rpc/study_get_content_manifest',{p_key:key},true),key)}
   const packageCacheKey=(subject,component,index)=>'package:'+subject+':'+component+(index===undefined?'':':'+index);
   async function cachePackageSelected(owner,subject){return cacheTransaction(owner,'readonly',(tx,set)=>{
     const selected=tx.objectStore('selected').get('package:'+subject);selected.onsuccess=()=>{const sha=selected.result?.sha256;if(!sha){set(null);return}const entry=tx.objectStore('entries').get(cacheIdentity(packageCacheKey(subject,'bank'),sha));entry.onsuccess=()=>set(entry.result||null)};
@@ -366,11 +383,12 @@
     guard();
     const progress=value=>{if(readEpoch!==epoch)throw Error('账户会话已切换，此内容不会应用到新账户。');onProgress(value)};
     progress({phase:'manifest',received:0,total:0});
-    const availablePackage=await findSubjectPackage(key);guard();const subject=packageSubject(key),pinKey=owner+':'+subject;let selectedPackage=selectedSubjectPackages.get(pinKey);
+    const availablePackage=await findSubjectPackage(key,options.subject);guard();const subject=packageSubject(key,options.subject),pinKey=owner+':'+subject;let selectedPackage=selectedSubjectPackages.get(pinKey);
     const subjectCacheEnabled=options.cacheMode!=='bypass';
     if(!selectedPackage&&subjectCacheEnabled&&options.preferLatest!==true&&window.indexedDB){let entry=null;try{entry=await cachePackageSelected(owner,subject)}catch{guard()}guard();if(entry)selectedPackage=await cachedPackageFound(entry,owner,subject,key);guard()}
     const selected=options.preferLatest===true?availablePackage:(selectedPackage||availablePackage),subjectPackage=selected?{reply:selected.reply,manifest:subjectManifest(selected.reply,subject,key)}:null;
     if(subjectPackage){const packageProgress=p=>progress({...p,availableManifest:availablePackage?.manifest,updateAvailable:availablePackage?.manifest.sha256!==subjectPackage.manifest.sha256});const value=await readSubjectComponent(subjectPackage,key,packageProgress,guard,validatePayload,{owner,readEpoch,cacheEnabled:subjectCacheEnabled});guard();if(packageComponent(key)==='bank')selectedSubjectPackages.set(pinKey,subjectPackage);return value;}
+    if(subject!=='psychology'&&['notes','documents'].includes(key))throw Error('本科尚未导入完整资料包；没有可读取的笔记或原始文件。');
     let manifest;
     try{manifest=await request('/rest/v1/rpc/study_get_content_manifest',{p_key:key},true)}
     catch(error){if(['P0002','PGRST202'].includes(error.code)){progress({phase:'legacy',received:0,total:0});const value=await request('/rest/v1/rpc/study_get_private_content',{p_key:key},true);guard();if(cacheEnabled)await validatePayload(value);guard();progress({phase:'complete',received:1,total:1});return value}throw error}
@@ -486,7 +504,7 @@
     }else checks.push({check:'本人账户服务端读取',passed:false,detail:'请先由本人在此浏览器登录；本检查不发送邮件'});
     return checks;
   }
-  window.PsychSync={configure,signIn,signInPassword,signOut,sync,stageLocal,resolveConflict,getPrivateContent,getPrivateContentManifest,setPrivateContent,setSubjectPackage,updateSubjectiveContent,checkAccess,
+  window.PsychSync={configure,signIn,signInPassword,signOut,sync,stageLocal,stageSubjectLocal,syncSubject,resolveConflict,getPrivateContent,getPrivateContentManifest,setPrivateContent,setSubjectPackage,updateSubjectiveContent,checkAccess,
     selfCheck,
     async getStatus(){await initialize();return {...status}},
     async getAccountState(){await initialize();return box?clone(box.pending.length?box.localSeen:box.remote):null},

@@ -95,6 +95,7 @@ async function inspect(buffer){
  const pack={manifest,manifestText:decoder.decode(manifestBytes),manifestSHA:await hash(manifestBytes),entries,parsed};
  const components={};for(const name of ['bank','notes','documents'])components[name]=await materialize(pack,name);
  pack.questionReview=await auditQuestionReviews(components.bank,{notes:components.notes,documents:components.documents});
+ if(pack.manifest.subject==='english'&&components.bank.groups!==undefined){if(!root.EnglishGroups)throw Error('英语整组校验组件尚未加载，未启用导入。');pack.groupReview=await root.EnglishGroups.audit(components.bank,pack.questionReview,api);if(manifest.semantic_review.status!=='incomplete'&&pack.groupReview.groups.some(g=>!g.legacy&&g.completeness_status==='complete'&&g.question_ids.some(id=>!practiceDisabled(pack.groupReview.byQuestion.get(id)))&&!pack.groupReview.accepted.has(g.id)))throw Error('正式英语包缺当前完整材料组独审，未启用导入。');}
  if(manifest.semantic_review.status!=='incomplete'&&!pack.questionReview.complete)throw Error('正式科目包整题审核门槛未通过；不能用审核状态标签替代当前版本证据。');
  return pack;
 }
