@@ -35,6 +35,9 @@ jobs:
           node --check learning/subject-room.js
           node --check learning/politics-study.js
           node --check learning/english-study.js
+          node --check learning/subject-trend.js
+          node scripts/test_subject_trend.cjs
+          node scripts/test_english_modules.cjs
           node scripts/test_english_groups.cjs
           node scripts/test_subject_package.cjs
           node scripts/test_subject_package_sync.cjs
