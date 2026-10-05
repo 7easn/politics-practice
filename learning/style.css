@@ -35,3 +35,5 @@ aside,main,.card,.annual>div,.option{min-width:0}.option{overflow-wrap:anywhere}
 
 /* Private politics source metadata must wrap within the mobile viewport. */
 #politicsContent,#privateNotes{overflow-wrap:anywhere}#politicsContent .card>h2,#privateNotes .card>p{white-space:pre-wrap}
+
+#managerSourcesSection,#politicsReferenceToolbar{overflow-wrap:anywhere}#politicsContent .reference,#politicsContent .pre-line{white-space:pre-wrap}

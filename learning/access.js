@@ -33,14 +33,14 @@ function showPanel(panel,section='bank',updateRoute=true){
  const readStatus=el('privateReadStatus');if(readStatus){if(managed&&section==='bank')el('managerVersionSection').append(readStatus);else el('content').before(readStatus)}
  el('managerBankSection').hidden=!managed||section!=='bank';
  el('managerNotesSection').hidden=!managed||section!=='notes';
- el('notesPanel').hidden=!managed||section!=='notes';el('managerStudySection').hidden=!studySection;
+ el('notesPanel').hidden=!managed||section!=='notes';el('managerStudySection').hidden=!studySection;el('managerSourcesSection').hidden=!managed||section!=='sources'||(window.SubjectRoom?.getSubject()||'psychology')==='psychology';if(managed&&section==='sources'&&!studySection)window.SubjectRoom?.showManagedSources();
  document.querySelectorAll('[data-management-section]').forEach(b=>{const active=managed&&b.dataset.managementSection===section;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active))});
  document.querySelectorAll('[data-panel]').forEach(b=>b.classList.toggle('active',managed&&b.dataset.panel==='manage'));
  if(managed){document.querySelectorAll('nav[aria-label="学习导航"] [data-view]').forEach(b=>b.classList.remove('active'));if(studySection)window.showStudyView?.(section)}
- if(updateRoute){const hash=managed?'manage'+(section==='bank'?'':'/'+section):location.hash.slice(1);if(managed&&location.hash!=='#'+hash)location.hash=hash;else if(!managed&&/^(manage(?:\/|$)|notes$|corrections$|sources$)/.test(hash)){location.hash='trend';window.showStudyView?.('trend')}}
+ window.SubjectRoom?.syncNavigation();if(updateRoute){const hash=managed?'manage'+(section==='bank'?'':'/'+section):location.hash.slice(1);if(managed&&location.hash!=='#'+hash)location.hash=hash;else if(!managed&&/^(manage(?:\/|$)|notes$|corrections$|sources$)/.test(hash)){location.hash='trend';window.showStudyView?.('trend')}}
 }
 async function showEnglish(updateRoute=true){if(!loggedIn)return;showPanel('study','bank',false);el('studyMain').hidden=true;if(updateRoute&&!location.hash.startsWith('#english'))history.pushState({englishOwner:currentUser},'','#english');document.querySelectorAll('nav[aria-label="学习导航"] [data-view]').forEach(b=>b.classList.remove('active'));await window.EnglishStudy?.open();}
-window.clearManagedSubjectContent=()=>{generation++;noteRecords=[];urls.forEach(URL.revokeObjectURL);urls=[];el('privateNotes').replaceChildren();el('privateDocuments').replaceChildren();el('noteSearch').value=''};
+window.clearManagedSubjectContent=()=>{generation++;noteRecords=[];urls.forEach(URL.revokeObjectURL);urls=[];el('privateNotes').replaceChildren();el('privateDocuments').replaceChildren();el('managerSourcesSection').replaceChildren();el('noteSearch').value=''};
 window.showPrivatePanel=showPanel;
 function restoreRoute(){if(window.SubjectRoom?.restoreRoute())return;const hash=location.hash.slice(1);if(hash==='english'||hash.startsWith('english/')){showEnglish(false);return}if(hash==='manage'||hash.startsWith('manage/'))showPanel('manage',hash.split('/')[1]||'bank',false);else if(['notes','corrections','sources'].includes(hash))showPanel('manage',hash,false);else{showPanel('study','bank',false);window.showStudyView?.(hash||'trend')}}
 window.restorePrivateRoute=restoreRoute;
