@@ -1,0 +1,44 @@
+/* View-only Chinese presentation. Never changes reviewed objects or record keys. */
+(function(root){
+'use strict';
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const array=v=>Array.isArray(v)?v:[],object=v=>v&&typeof v==='object'&&!Array.isArray(v);
+const labels={prompt:'题目',reference_answer:'参考答案',answer:'参考答案',answer_and_explanation:'参考答案与解析',explanation:'解析',explanation_plain:'通俗解析',learning_coverage_points:'学习要点',coverage_points:'学习要点',point:'要点',text:'正文',body:'正文',label:'说明',title:'标题',basis:'依据',conditions:'适用条件',when:'条件',result:'条件下的判断',summary:'说明',reasoning:'判断理由',limits:'范围与限制',limitations:'范围与限制',identity:'答案身份',support:'依据说明',answer_attribution:'答案身份',answer_identity:'答案身份',explanation_identity:'解析身份',material_origin:'材料身份',source_answer_origin:'参考答案来源说明',source_cited_news_verification:'引述材料核验范围',answer_label:'参考答案身份',explanation_authorship:'解析身份',classification:'变式身份',source_prompt_mark:'原题分值说明',original_missing_printed_pages:'原答案缺失印刷页',recommended_labels:'建议选项',existing_independent_supplement_labels:'既有独立补答选项',existing_reference_answer:'既有参考答案',existing_frozen_answer_indices:'既有答案零基索引',printed_textbook_labels:'原教辅选项',labels:'选项'};
+const facts={hold_preserved:'原停用限制保留',not_official_answer:'非官方命题答案',not_current_fact_certification:'不代表当前事实全面核验',original_2027_teaching_context_preserved:'保留原教辅版年语境，不据版年推定事实',unverified_authority_excluded_from_definitive_basis:'未经核验出处不作为确定判断依据'};
+const technical=/^(?:id|.*_id|.*_ids|.*sha256.*|library_.*|file_id|version|source_snapshots|question_snapshot|.*review.*|.*checked|answer_snapshot|decision_type|.*answer_status|.*answer_indices|official_marks|scoring|selfcheck_scoring|practice_enabled|release_enabled|.*binding|adapter_projection|probability|prediction_strength|prediction|past_exam|not_original_exam|type|source_type|source_question_number|original_question_number|subquestion|automatic_correctness_enabled|auto_grade|numeric.*)$/;
+function parsed(v){if(typeof v!=='string')return v;const t=v.trim();if(/^[\[{]/.test(t)){try{return JSON.parse(t)}catch{}}return v}
+function paragraphs(value){const lines=String(value??'').replace(/\r\n?/g,'\n').split('\n'),out=[];let current='';
+ const boundary=s=>/^(?:材料\s*[一二三四五六七八九十\d]+|[（(]\d+[）)]|\d+[.．、]|[一二三四五六七八九十]+[、．]|摘自|来源[：:]|出处[：:]|标题[：:]|引言[：:]|[•●]|[-*]\s|——)/.test(s);
+ function flush(){if(current)out.push(current);current=''}
+ for(const original of lines){const s=original.trim();if(!s){flush();continue}if(current&&(boundary(s)||/^材料\s*[一二三四五六七八九十\d]+$/.test(current)||/[。！？!?；;](?:[”’])?$/.test(current)))flush();if(current&&/[A-Za-z0-9]$/.test(current)&&/^[A-Za-z0-9]/.test(s))current+=' ';current+=s}flush();return out;
+}
+function text(v,cls=''){return paragraphs(v).map(p=>(/^材料\s*[一二三四五六七八九十\d]+$/.test(p)?'<h3 class="politics-material-label">'+esc(p)+'</h3>':'<p'+(cls?' class="'+cls+'"':'')+'>'+esc(p)+'</p>')).join('')}
+function value(v){v=parsed(v);if(v==null||typeof v==='boolean')return '';if(Array.isArray(v))return '<ul>'+v.map(x=>'<li>'+value(x)+'</li>').join('')+'</ul>';if(object(v))return Object.entries(v).filter(([k,x])=>!technical.test(k)&&x!=null).map(([k,x])=>{if(/(?:refs|references)$/.test(k))return '';if(typeof x==='boolean')return x&&facts[k]?text(facts[k]):'';return (labels[k]?'<h4>'+esc(labels[k])+'</h4>':'')+value(x)}).join('');return text(v==='manual'?'手工作答，非官方评分':v)}
+function refs(items,bank){return array(items).map(ref=>{const r=typeof ref==='string'?{id:ref}:ref||{},s=array(bank?.sources).find(s=>s.id===(r.source_id||r.id))||{},name=r.file_name||r.title||s.file_name||s.title||'来源未标名称';const pages=r.pdf_pages||r.pdf_page,printed=r.printed_pages||r.printed_page;const page=v=>Array.isArray(v)?v.join('、'):v;return '<div class="reference">'+esc(name)+(pages!=null?' · PDF '+esc(page(pages))+' 页':'')+(printed!=null?' · 印刷 '+esc(page(printed))+' 页':'')+(r.locator?text(r.locator):'')+(r.support?text(r.support):'')+(r.limits?value(r.limits):'')+(typeof r.url==='string'&&/^https?:\/\//.test(r.url)?'<a href="'+esc(r.url)+'" target="_blank" rel="noopener noreferrer">查看来源</a>':'')+'</div>'}).join('')}
+function field(name,v){return v==null||v===''||Array.isArray(v)&&!v.length?'':'<div class="politics-reference-field"><h4>'+esc(name)+'</h4>'+value(v)+'</div>'}
+function variants(items,bank){return array(items).map((v,i)=>'<section class="politics-variant"><h4>变式 '+(i+1)+'（归属母题，不作为独立真题）</h4>'+(typeof v==='string'?value(v):field('变式题目',v.prompt)+field('参考答案',v.answer)+field('参考答案与解析',v.answer_and_explanation)+field('解析',v.explanation||v.explanation_plain)+field('依据',v.basis)+field('变式身份',v.label||v.classification)+field('解析身份',v.explanation_authorship)+refs(v.source_refs,bank))+'</section>').join('')}
+function original(q,bank){return array(bank?.[q.adapter_projection?.raw_registry]).find(x=>x.id===q.id)||q}
+function splitPrompt(v){return String(v??'').replace(/(材料\s*[一二三四五六七八九十\d]+)(?=[^\n])/g,'\n$1\n').replace(/([（(]\d+[）)])/g,'\n$1').replace(/(摘自)/g,'\n$1');}
+function isManual(q){return q.adapter_projection?.manual===true||!Array.isArray(q.options)}
+function question(q,bank){if(!isManual(q))return '<h2 tabindex="-1">'+esc(q.prompt)+'</h2>';const raw=original(q,bank);let material=raw.material_ocr_text||raw.materials||raw.material||raw.stem;let stemQuestions='';if(raw.stem){const at=raw.stem.search(/[（(]1[）)]/);if(at>=0){material=raw.stem.slice(0,at);stemQuestions=raw.stem.slice(at)}}const prompts=array(raw.prompt_subquestions);let body='';
+ if(material)body='<section class="politics-material prompt" aria-label="题目材料">'+text(splitPrompt(material))+'</section>';
+ if(prompts.length&&raw.prompt)body+=text(raw.prompt);
+ if(prompts.length)body+='<section class="politics-subquestions prompt" aria-label="分问题目">'+prompts.map((p,i)=>'<p><span class="politics-subquestion-number">（'+(i+1)+'）</span>'+esc(paragraphs(p).join(''))+'</p>').join('')+'</section>';
+ else if(stemQuestions)body+='<section class="politics-subquestions prompt" aria-label="分问题目">'+text(splitPrompt(stemQuestions))+'</section>';
+ else if(!raw.stem){const prompt=raw.prompt||q.prompt;body+='<section class="politics-subquestions prompt" aria-label="分问题目">'+text(splitPrompt(material&&prompt.startsWith(material)?prompt.slice(material.length):prompt))+'</section>'}
+ // Some references carry their own prompt, which is also shown beside each answer.
+ return '<h2 class="politics-question-title" tabindex="-1">'+esc(q.prediction?'原创主观训练':'主观题')+(raw.source_question_number||raw.original_question_number?' · 第 '+esc(raw.source_question_number||raw.original_question_number)+' 题':'')+'</h2>'+body;
+}
+function answer(q,bank){const raw=original(q,bank),manual=isManual(q),subs=array(raw.subanswers||raw.reference_answers);let html='<section class="answer politics-readable-answer"><h3>参考答案与解析</h3>';
+ if(manual)html+='<p class="notice">手工作答与参考自查；不自动判对错或给分，学习要点并非官方评分标准。</p>';
+ else html+='<p class="fine">私有学习参考，非官方评分；对照完整答案集合自查，无部分分或数值评分。</p>'+field('既有参考选项',array(q.answer).map(i=>String.fromCharCode(65+i)).join('、'));
+ if(subs.length)html+=subs.map((a,i)=>'<section class="politics-subanswer" data-subquestion="'+esc(a.subquestion||i+1)+'"><h3>第 '+esc(a.subquestion||i+1)+' 问</h3>'+field('本问题目',a.prompt||array(raw.prompt_subquestions)[i])+field('参考答案',a.reference_answer)+field('答案身份',a.answer_label)+field('学习要点',a.learning_coverage_points||a.coverage_points)+field('通俗解析',a.explanation_plain)+field('原题分值说明',a.source_prompt_mark)+variants(a.variant?[a.variant]:a.variants,bank)+refs(a.source_reference_answer_refs,bank)+'</section>').join('');
+ else if(manual)html+=field('参考答案',raw.reference_answer||raw.answer)+field('学习要点',raw.answer_points);
+ html+=field('通俗解析',raw.explanation_plain||raw.explanation||raw.plain_explanation)+['answer_attribution','answer_identity','explanation_identity','material_origin','source_answer_origin','source_cited_news_verification','answer_label'].map(k=>field(labels[k],raw[k])).join('')+field('来源依据与范围',raw.source_basis)+variants(raw.variants||raw.variations,bank);
+ if(q.dispute_annotation){const d=q.dispute_annotation;html+='<section class="politics-dispute"><h3>争议与独立学习判断（不计分）</h3>'+field('争议说明',d.dispute_summary)+field('原答案身份',d.original_answer_identity)+refs(d.original_answer_identity?.source_refs,bank)+field('助手独立学习判断',d.assistant_judgment)+field('判断理由',d.reasoning)+field('范围与限制',d.limits)+refs(d.original_source_refs,bank)+refs(d.authority_refs,bank)+'</section>'}
+ if(q.disabled_reason)html+=field('练习限制',q.disabled_reason);
+ const sources=raw.source_refs||raw.source_basis?.source_refs||q.source_refs||q.source_ids;html+='<section aria-label="题目来源"><h3>来源与定位</h3>'+refs(sources,bank)+'</section></section>';return html;
+}
+root.PoliticsRender={isManual,paragraphs,value,refs,variants,question,answer,original};
+if(typeof module!=='undefined'&&module.exports)module.exports=root.PoliticsRender;
+})(typeof window==='undefined'?globalThis:window);

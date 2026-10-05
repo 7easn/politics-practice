@@ -33,6 +33,8 @@ jobs:
           node scripts/test_source_display.cjs
           node scripts/test_subjective_merge.cjs
           node --check learning/subject-room.js
+          node --check learning/politics-render.js
+          node scripts/test_politics_render.cjs
           node --check learning/politics-study.js
           node --check learning/english-study.js
           node --check learning/subject-trend.js

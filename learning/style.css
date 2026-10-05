@@ -37,3 +37,14 @@ aside,main,.card,.annual>div,.option{min-width:0}.option{overflow-wrap:anywhere}
 #politicsContent,#privateNotes{overflow-wrap:anywhere}#politicsContent .card>h2,#privateNotes .card>p{white-space:pre-wrap}
 
 #managerSourcesSection,#politicsReferenceToolbar{overflow-wrap:anywhere}#politicsContent .reference,#politicsContent .pre-line{white-space:pre-wrap}
+
+/* Match psychology subjective .prompt typography; keep titles separate from materials. */
+#politicsContent .politics-material,#politicsContent .politics-subquestions{font-size:17px;font-weight:400;line-height:1.9;white-space:normal}
+#politicsContent .politics-material p,#politicsContent .politics-subquestions p{margin:1em 0}
+#politicsContent .politics-question-title{font-size:20px;font-weight:600;line-height:1.5;white-space:normal}
+#politicsContent .politics-readable-answer p{white-space:normal}
+#politicsContent .politics-readable-answer{line-height:1.9}
+#politicsContent .politics-readable-answer h3{font-size:17px;margin:20px 0 10px}
+#politicsContent .politics-readable-answer h4{font-size:15px;font-weight:600;margin:14px 0 6px}
+#politicsContent .politics-subanswer,#politicsContent .politics-variant,#politicsContent .politics-dispute{margin-top:20px;padding-top:12px;border-top:1px solid var(--line)}
+#politicsContent .politics-subquestion-number{font-weight:500}
