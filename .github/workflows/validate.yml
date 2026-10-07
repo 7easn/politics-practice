@@ -32,6 +32,7 @@ jobs:
           node scripts/test_answer_display.cjs
           node scripts/test_source_display.cjs
           node scripts/test_subjective_merge.cjs
+          node --check learning/teacher-interview.js
           node --check learning/subject-room.js
           node --check learning/politics-catalog.js
           node scripts/test_politics_catalog.cjs
@@ -59,3 +60,10 @@ jobs:
           PLAYWRIGHT_MODULE_PATH="$RUNNER_TEMP/psychology-browser-check/node_modules/playwright" node scripts/test_record_persistence.cjs
           PLAYWRIGHT_MODULE_PATH="$RUNNER_TEMP/psychology-browser-check/node_modules/playwright" node scripts/test_subject_rooms_browser.cjs
           PLAYWRIGHT_MODULE_PATH="$RUNNER_TEMP/psychology-browser-check/node_modules/playwright" node scripts/test_english_frameworks_browser.cjs
+      - name: Require synthetic teacher interview isolation
+        timeout-minutes: 2
+        run: |
+          python3 -m http.server 8769 --bind 127.0.0.1 &
+          preview_pid=$!
+          trap 'kill "$preview_pid"' EXIT
+          PLAYWRIGHT_MODULE_PATH="$RUNNER_TEMP/psychology-browser-check/node_modules/playwright" node scripts/test_teacher_interview.cjs

@@ -283,7 +283,7 @@
     }
   });
 
-  const contentKeys=['psychology','politics','english','notes','documents'];
+  const contentKeys=['psychology','politics','english','teacher-interview','notes','documents'];
   const contentHash=async text=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text)))).map(n=>n.toString(16).padStart(2,'0')).join('');
   function contentChunks(text){
     const chunks=[];let start=0;
@@ -303,7 +303,7 @@
     return {format:'private-subject-package',document_key:key,upload_id:reply.package_id,sha256:reply.sha256,byte_count:objects.reduce((n,o)=>n+o.bytes,0),chunk_count:objects.length,updated_at:reply.updated_at,subject,package_version:manifest.package_version};
   }
   async function findSubjectPackage(key,subjectOverride){
-    if(!window.SubjectPackage)return null;
+    if(key==='teacher-interview'||!window.SubjectPackage)return null;
     const subject=packageSubject(key,subjectOverride);let reply;
     try{reply=await request('/rest/v1/rpc/study_get_subject_package',{p_subject:subject},true)}catch(error){if(error.code==='PGRST202'||error.code==='P0002')return null;throw error}
     if(reply.available===false)return null;
@@ -385,7 +385,7 @@
     progress({phase:'manifest',received:0,total:0});
     const availablePackage=await findSubjectPackage(key,options.subject);guard();const subject=packageSubject(key,options.subject),pinKey=owner+':'+subject;let selectedPackage=selectedSubjectPackages.get(pinKey);
     const subjectCacheEnabled=options.cacheMode!=='bypass';
-    if(!selectedPackage&&subjectCacheEnabled&&options.preferLatest!==true&&window.indexedDB){let entry=null;try{entry=await cachePackageSelected(owner,subject)}catch{guard()}guard();if(entry)selectedPackage=await cachedPackageFound(entry,owner,subject,key);guard()}
+    if(key!=='teacher-interview'&&!selectedPackage&&subjectCacheEnabled&&options.preferLatest!==true&&window.indexedDB){let entry=null;try{entry=await cachePackageSelected(owner,subject)}catch{guard()}guard();if(entry)selectedPackage=await cachedPackageFound(entry,owner,subject,key);guard()}
     const selected=options.preferLatest===true?availablePackage:(selectedPackage||availablePackage),subjectPackage=selected?{reply:selected.reply,manifest:subjectManifest(selected.reply,subject,key)}:null;
     if(subjectPackage){const packageProgress=p=>progress({...p,availableManifest:availablePackage?.manifest,updateAvailable:availablePackage?.manifest.sha256!==subjectPackage.manifest.sha256});const value=await readSubjectComponent(subjectPackage,key,packageProgress,guard,validatePayload,{owner,readEpoch,cacheEnabled:subjectCacheEnabled});guard();if(packageComponent(key)==='bank')selectedSubjectPackages.set(pinKey,subjectPackage);return value;}
     if(subject!=='psychology'&&['notes','documents'].includes(key))throw Error('本科尚未导入完整资料包；没有可读取的笔记或原始文件。');

@@ -4,19 +4,20 @@
 const el=id=>document.getElementById(id),api=window.PsychSync;
 const feedback=message=>{el('accessMessage').textContent=message;el('accessMessage').hidden=!message};
 let mounted=false,started=false,loggedIn=false,currentUser=null,generation=0,noteRecords=[],urls=[],psychOwner=null,scriptLoading=null;
-const clear=()=>{generation++;noteRecords=[];urls.forEach(URL.revokeObjectURL);urls=[];el('privateNotes').replaceChildren();el('privateDocuments').replaceChildren();window.clearStudyContent?.();window.EnglishStudy?.reset();window.PoliticsStudy?.reset();window.SubjectRoom?.reset();el('privateApp').hidden=true;el('accountMenu').open=false;el('ownerBar').hidden=true;el('notesPanel').hidden=true;el('managePanel').hidden=true;window.PrivateContentManager?.reset();el('loginPanel').hidden=false;el('ownerPassword').value='';};
+const clear=()=>{generation++;noteRecords=[];urls.forEach(URL.revokeObjectURL);urls=[];el('privateNotes').replaceChildren();el('privateDocuments').replaceChildren();window.clearStudyContent?.();window.TeacherInterview?.reset();window.EnglishStudy?.reset();window.PoliticsStudy?.reset();window.SubjectRoom?.reset();el('privateApp').hidden=true;el('accountMenu').open=false;el('ownerBar').hidden=true;el('notesPanel').hidden=true;el('managePanel').hidden=true;window.PrivateContentManager?.reset();el('loginPanel').hidden=false;el('ownerPassword').value='';};
 async function enter(status){
  if(!status.authenticated){loggedIn=false;currentUser=null;clear();feedback(/错误|失败|拒绝|权限|允许名单|邮件|过期|网络|HTTP/.test(status.message||'')?status.message:'');return}
  if(loggedIn&&currentUser===status.user_id)return;
+ if(loggedIn&&currentUser!==status.user_id)clear();
  loggedIn=true;currentUser=status.user_id;const stamp=++generation;
  el('loginPanel').hidden=true;el('ownerBar').hidden=false;el('privateApp').hidden=false;
- if(!mounted){el('privateApp').innerHTML=window.STUDY_SHELL;const shell=el('privateApp').querySelector('.shell');shell.append(el('managePanel'));el('managerNotesSection').append(el('notesPanel'));window.PrivateContentManager.initialize(api,()=>loggedIn);window.EnglishStudy?.initialize({api,host:shell});window.PoliticsStudy?.initialize({api,host:shell});window.SubjectRoom?.initialize({api,host:shell,callbacks:{english:()=>showEnglish(false),manager:section=>showPanel('manage',section,false),ensurePsychology,psychology:async hash=>{showPanel('study','bank',false);await ensurePsychology();if(window.SubjectRoom.getSubject()==='psychology')window.showStudyView?.(hash.split('/')[0]||'trend')}}});mounted=true}
+ if(!mounted){el('privateApp').innerHTML=window.STUDY_SHELL;const shell=el('privateApp').querySelector('.shell');shell.append(el('managePanel'));el('managerNotesSection').append(el('notesPanel'));window.PrivateContentManager.initialize(api,()=>loggedIn);const teacher=document.createElement('main');teacher.id='teacherMain';teacher.hidden=true;shell.append(teacher);window.TeacherInterview.mount({api,authorized:()=>loggedIn,owner:()=>currentUser&&JSON.stringify([window.PSYCH_SYNC_CONFIG?.url||'',currentUser])});window.EnglishStudy?.initialize({api,host:shell});window.PoliticsStudy?.initialize({api,host:shell});window.SubjectRoom?.initialize({api,host:shell,callbacks:{teacher:()=>showPanel('teacher','bank',false),english:()=>showEnglish(false),manager:section=>showPanel('manage',section,false),ensurePsychology,psychology:async hash=>{showPanel('study','bank',false);await ensurePsychology();if(window.SubjectRoom.getSubject()==='psychology')window.showStudyView?.(hash.split('/')[0]||'trend')}}});mounted=true}
  window.SubjectRoom?.ownerChanged(currentUser);restoreRoute();
 }
 async function ensurePsychology(){
  if(scriptLoading)return scriptLoading;
  if(started&&window.reloadPrivateStudy){if(psychOwner!==currentUser){psychOwner=currentUser;return window.reloadPrivateStudy()}return true}
- const uid=currentUser;started=true;psychOwner=uid;scriptLoading=(async()=>{if(!window.NativeSubjectiveView)await new Promise((resolve,reject)=>{const helper=document.createElement('script');helper.src='learning/native-subjective-view.js?v=20261004-subject-rooms-v17';helper.onload=resolve;helper.onerror=()=>reject(Error('原生题显示组件读取失败，请刷新重试'));document.head.append(helper)});await new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='learning/app.js?v=20261004-subject-rooms-v17';script.onload=resolve;script.onerror=()=>reject(Error('心理学学习组件读取失败，请重试'));document.head.append(script)});return true})();try{return await scriptLoading}finally{scriptLoading=null}
+ const uid=currentUser;started=true;psychOwner=uid;scriptLoading=(async()=>{if(!window.NativeSubjectiveView)await new Promise((resolve,reject)=>{const helper=document.createElement('script');helper.src='learning/native-subjective-view.js?v=20261004-subject-rooms-v17';helper.onload=resolve;helper.onerror=()=>reject(Error('原生题显示组件读取失败，请刷新重试'));document.head.append(helper)});await new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='learning/app.js?v=20261007-teacher-review2';script.onload=resolve;script.onerror=()=>reject(Error('心理学学习组件读取失败，请重试'));document.head.append(script)});return true})();try{return await scriptLoading}finally{scriptLoading=null}
 }
 api.subscribe(s=>{const b=el('saveStatus'),failed=/失败|错误|超时|HTTP|权限|拒绝/.test(s.message||'');b.textContent=s.conflict?'同步冲突':failed?'同步失败':s.pending?'待同步 '+s.pending+' 项':s.authenticated?'已同步':'仅本机保存';b.dataset.state=s.conflict||failed?'error':s.pending?'waiting':'success';b.onclick=()=>{location.hash='sync'};enter(s).catch(e=>{feedback(e.message)})});
 api.getStatus();
@@ -26,18 +27,19 @@ function showPanel(panel,section='bank',updateRoute=true){
  if(!loggedIn)return;
  if(['notes','corrections','sources'].includes(panel)){section=panel;panel='manage'}
  if(!['bank','notes','corrections','sources'].includes(section))section='bank';
+ const teacher=panel==='teacher';el('teacherMain').hidden=!teacher;
  window.SubjectRoom?.hideHomeTools();window.EnglishStudy?.hide();window.PoliticsStudy?.hide();const managed=panel==='manage',studySection=managed&&(window.SubjectRoom?.getSubject()||'psychology')==='psychology'&&['corrections','sources'].includes(section);
  el('privateApp').hidden=false;el('managePanel').hidden=!managed;
  const main=el('studyMain'),home=el('privateApp').querySelector('.shell');
- (studySection?el('managerStudySection'):home).append(main);main.hidden=managed&&!studySection;
+ (studySection?el('managerStudySection'):home).append(main);main.hidden=teacher||managed&&!studySection;
  const readStatus=el('privateReadStatus');if(readStatus){if(managed&&section==='bank')el('managerVersionSection').append(readStatus);else el('content').before(readStatus)}
  el('managerBankSection').hidden=!managed||section!=='bank';
  el('managerNotesSection').hidden=!managed||section!=='notes';
  el('notesPanel').hidden=!managed||section!=='notes';el('managerStudySection').hidden=!studySection;el('managerSourcesSection').hidden=!managed||section!=='sources'||(window.SubjectRoom?.getSubject()||'psychology')==='psychology';if(managed&&section==='sources'&&!studySection)window.SubjectRoom?.showManagedSources();
  document.querySelectorAll('[data-management-section]').forEach(b=>{const active=managed&&b.dataset.managementSection===section;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active))});
- document.querySelectorAll('[data-panel]').forEach(b=>b.classList.toggle('active',managed&&b.dataset.panel==='manage'));
- if(managed){document.querySelectorAll('nav[aria-label="学习导航"] [data-view]').forEach(b=>b.classList.remove('active'));if(studySection)window.showStudyView?.(section)}
- window.SubjectRoom?.syncNavigation();if(updateRoute){const hash=managed?'manage'+(section==='bank'?'':'/'+section):location.hash.slice(1);if(managed&&location.hash!=='#'+hash)location.hash=hash;else if(!managed&&/^(manage(?:\/|$)|notes$|corrections$|sources$)/.test(hash)){location.hash='trend';window.showStudyView?.('trend')}}
+ document.querySelectorAll('[data-panel]').forEach(b=>b.classList.toggle('active',(managed||teacher)&&b.dataset.panel===panel));
+ if(managed||teacher){document.querySelectorAll('nav[aria-label="学习导航"] [data-view]').forEach(b=>b.classList.remove('active'));if(studySection)window.showStudyView?.(section)}
+ window.SubjectRoom?.syncNavigation();if(teacher){window.TeacherInterview.open(location.hash.startsWith('#teacher-interview/')?location.hash.split('/')[1]:'tree',false);if(updateRoute&&!location.hash.startsWith('#teacher-interview/'))location.hash='teacher-interview/tree';return}if(updateRoute){const hash=managed?'manage'+(section==='bank'?'':'/'+section):location.hash.slice(1);if(managed&&location.hash!=='#'+hash)location.hash=hash;else if(!managed&&/^(manage(?:\/|$)|notes$|corrections$|sources$)/.test(hash)){location.hash='trend';window.showStudyView?.('trend')}}
 }
 async function showEnglish(updateRoute=true){if(!loggedIn)return;showPanel('study','bank',false);el('studyMain').hidden=true;if(updateRoute&&!location.hash.startsWith('#english'))history.pushState({englishOwner:currentUser},'','#english');document.querySelectorAll('nav[aria-label="学习导航"] [data-view]').forEach(b=>b.classList.remove('active'));await window.EnglishStudy?.open();}
 window.clearManagedSubjectContent=()=>{generation++;noteRecords=[];urls.forEach(URL.revokeObjectURL);urls=[];el('privateNotes').replaceChildren();el('privateDocuments').replaceChildren();el('managerSourcesSection').replaceChildren();el('noteSearch').value=''};
